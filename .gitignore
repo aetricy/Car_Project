@@ -1,0 +1,6 @@
+# PlatformIO build ve cache dosyaları
+.pio/
+.vscode/
+build/
+.DS_Store
+*.pyc
