@@ -24,4 +24,10 @@ typedef struct {
     bool button_minus;
 } g29_telemetry_t;
 
+typedef struct {
+    float battery_voltage; // Lipo durumu (G29 RPM LED'lerini yakmak için)
+    uint8_t car_status;    // 0: OK, 1: Low Battery, 2: Error
+} car_feedback_t;
+
+
 #endif

@@ -2,6 +2,14 @@
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
 #include "esp_log.h"
+#include "esp_timer.h" // Zaman ölçümü için gerekli
+
+
+#include "CONFIG.h"
+
+// Son direksiyon hareketinin zamanını tutacağımız değişken
+volatile int64_t last_g29_input_time = 0; 
+const int64_t INACTIVITY_TIMEOUT_US = INACTIVITY_TIMEOUT_us; // 30 Saniye (Mikrosaniye cinsinden)
 
 
 #include "g29_driver_host.h" // Modüler kütüphanemiz
@@ -20,11 +28,12 @@ g29_telemetry_t current_telemetry;
 void on_g29_input_received(const uint8_t *data, int len) {
     if(g29_is_ready()){
         
-
+        last_g29_input_time = esp_timer_get_time();
         
         // Ham veriyi telemetri struct'ına dönüştür
         g29_process_raw_data(data, len, &current_telemetry);
          
+        // ESP-NOW kütüphanemize yolla (O da Mutex'e yazıp görevi uyandıracak)
         send_telemetry_to_car(&current_telemetry);
 
 
@@ -88,10 +97,10 @@ void app_main(void) {
     ESP_LOGI(TAG, "Sistem Başlatılıyor (Core 0)...");
 
     
-    if (g29_init(on_g29_state_changed, on_g29_input_received)) {
+    if (g29_init(on_g29_state_changed, on_g29_input_received) == ESP_OK) {
         ESP_LOGI(TAG, "Sürücüsü Başarıyla Kuruldu. USB Bekleniyor...");
 
-        // TASKS IN HERE...
+        // OTHER TASKS IN HERE...
 
 
         
@@ -100,3 +109,6 @@ void app_main(void) {
     }
     
 }
+
+
+    

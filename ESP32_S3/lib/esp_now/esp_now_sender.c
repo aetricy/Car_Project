@@ -4,42 +4,79 @@
 #include "esp_log.h"
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
-#include "freertos/queue.h"
+#include "freertos/semphr.h"
 #include "nvs_flash.h"
-
+#include "esp_timer.h" 
 
 #include "g29_config.h"
 #include "config.h"
+#include "esp_now_sender.h"
 
 static const char *TAG = "ESP_NOW_SENDER";
 uint8_t target_car_mac[6];
 
-// ESP-NOW Kuyruk Yapısı (En son 5 paketi tutar, eskileri atar ki şişme yapmasın)
-static QueueHandle_t telemetry_queue = NULL;
+// RTOS Nesneleri
+static SemaphoreHandle_t telemetry_mutex = NULL;
+static TaskHandle_t espnow_tx_task_handle = NULL;
+static g29_telemetry_t shared_telemetry;
 
-// ESP-NOW Core 0 Görevi
+// Dışarıdan erişilen zaman değişkenleri
+extern volatile int64_t last_g29_input_time;
+extern const int64_t INACTIVITY_TIMEOUT_US;
+
+// --- YENİ: Sistemin uyuyup uyumadığını takip eden bayrak ---
+static volatile bool is_sleeping = true; 
+
+// ESP-NOW Görevi
 static void esp_now_sender_task(void *arg) {
     g29_telemetry_t packet;
     
     while (1) {
-        // Kuyruktan yeni paket gelmesini bekle (Bloklanır, CPU'yu yormaz)
-        if (xQueueReceive(telemetry_queue, &packet, portMAX_DELAY) == pdTRUE) {
-            esp_err_t result = esp_now_send(target_car_mac, (uint8_t *)&packet, sizeof(g29_telemetry_t));
+        int64_t current_time = esp_timer_get_time();
+
+        // 1. DURUM: AKTİF MOD (30 Saniye dolmadıysa)
+        if ((current_time - last_g29_input_time) < INACTIVITY_TIMEOUT_US) {
             
-            // Hata takibi
-             if (result != ESP_OK) {
-                ESP_LOGW(TAG, "Gönderim hatası: %d", result);
+            is_sleeping = false; // Uyandık, aktif moddayız
+
+            // Veriyi güvenle RAM'den al
+            if (xSemaphoreTake(telemetry_mutex, pdMS_TO_TICKS(5)) == pdTRUE) {
+                packet = shared_telemetry;
+                xSemaphoreGive(telemetry_mutex);
+                
+                // Havaya fırlat
+                esp_now_send(target_car_mac, (uint8_t *)&packet, sizeof(g29_telemetry_t));
             }
+
+            // --- SIKI 50HZ KİLİDİ ---
+            // Görevi tam olarak 20ms uyutuyoruz. Bu sırada dışarıdan 1000 kere dürtülse bile 
+            // uyanmaz, ritmini bozmaz. Tam 50Hz (saniyede 50 paket) gönderir.
+            vTaskDelay(pdMS_TO_TICKS(20)); 
+            
+            // 20ms'lik bekleme süresince birikmiş olabilecek gereksiz uyandırma sinyallerini çöpe at.
+            ulTaskNotifyTake(pdTRUE, 0); 
+            
+        } 
+        // 2. DURUM: UYKU MODU (30 Saniye Hareketsizlik)
+        else {
+            if (!is_sleeping) {
+                ESP_LOGW(TAG, "30 Saniye hareketsizlik. Uykuya geciliyor...");
+                is_sleeping = true;
+            }
+            
+            // SÜRESİZ UYKU: Sadece xTaskNotifyGive çağrıldığında (ilk harekette) uyanır
+            ulTaskNotifyTake(pdTRUE, portMAX_DELAY);
+            
+            ESP_LOGI(TAG, "Hareket algilandi! 50Hz yayin tekrar basliyor.");
         }
     }
 }
 
+// ... (init_esp_now_sender fonksiyonun öncekiyle tamamen aynı kalıyor) ...
 void init_esp_now_sender(void) {
     memcpy(target_car_mac, CAR_MAC_TABLE[ACTIVE_CAR_ID], 6);
-    
-    
-
-    // --- EKLENEN KISIM: NVS FLASH BAŞLATMA ---
+    telemetry_mutex = xSemaphoreCreateMutex();
+    // NVS ve Wi-Fi kurulumları... (Buraları aynen kopyalayabilirsin)
     esp_err_t ret = nvs_flash_init();
     if (ret == ESP_ERR_NVS_NO_FREE_PAGES || ret == ESP_ERR_NVS_NEW_VERSION_FOUND) {
         ESP_ERROR_CHECK(nvs_flash_erase());
@@ -63,32 +100,40 @@ void init_esp_now_sender(void) {
     peerInfo.encrypt = false;
     ESP_ERROR_CHECK(esp_now_add_peer(&peerInfo));
 
-    // 3. Kuyruğu Oluştur (5 eleman kapasiteli)
-    telemetry_queue = xQueueCreate(5, sizeof(g29_telemetry_t));
 
-    ESP_LOGI(TAG, "Aktif Araç ID: %d | Hedef MAC: %02X:%02X:%02X:%02X:%02X:%02X", 
+    ESP_LOGI(TAG, "Aktif Araç ID: %d | Hedef MAC: %02X:%02X:%02X:%02X:%02X:%02X",
              ACTIVE_CAR_ID,
              target_car_mac[0], target_car_mac[1], target_car_mac[2],
              target_car_mac[3], target_car_mac[4], target_car_mac[5]);
 
-    // 4. GÖREVİ KESİN OLARAK CORE 0'A BAĞLA (Pinned to Core 0)
+    // ... Görev oluşturma ...
     xTaskCreatePinnedToCore(
-        esp_now_sender_task,   // Çalışacak fonksiyon
-        "esp_now_sender",      // Görev adı
-        4096,                  // Stack boyutu
-        NULL,                  // Parametre
-        4,                     // Öncelik (Priority)
-        NULL,                  // Task Handle
-        OTHER_TASK_CORE        // <-- CORE 0 SEÇİLDİ
+        esp_now_sender_task,   
+        "esp_now_sender",      
+        4096,                  
+        NULL,                  
+        4,                     
+        &espnow_tx_task_handle,
+        OTHER_TASK_CORE        
     );
-
-    ESP_LOGI(TAG, "ESP-NOW Çalıştırıldı.");
 }
 
-// Artık bu fonksiyon veriyi direkt göndermek yerine kuyruğa atacak (Core-safe)
+
+
+// Ana uygulamadan çağrılan veri gönderme fonksiyonu
 void send_telemetry_to_car(const g29_telemetry_t *telemetry) {
-    if (telemetry_queue != NULL) {
-        // xQueueSendToBack istersen anlık atar, 0 ise bekletmez
-        xQueueSend(telemetry_queue, telemetry, 0);
+    if (telemetry_mutex != NULL) {
+        // 1. Veriyi her zaman güvenle belleğe (shared_telemetry) yaz
+        if (xSemaphoreTake(telemetry_mutex, portMAX_DELAY) == pdTRUE) {
+            shared_telemetry = *telemetry;
+            xSemaphoreGive(telemetry_mutex);
+        }
+        
+        // --- KRİTİK DEĞİŞİKLİK ---
+        // Sadece sistem uyuyorsa görevi anında uyandırmak için dürt.
+        // Zaten uyanıksa, bırak kendi 50Hz'lik ritminde (vTaskDelay içinde) takılsın.
+        if (is_sleeping && espnow_tx_task_handle != NULL) {
+            xTaskNotifyGive(espnow_tx_task_handle);
+        }
     }
 }
