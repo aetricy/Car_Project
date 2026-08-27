@@ -1,7 +1,7 @@
 #ifndef CONFIG_HOST_H
 #define CONFIG_HOST_H
 
-#define LOG_WHEELSTATE 0
+#define LOG_WHEELSTATE 1
 
 #define USB_TASK_CORE 0
 #define OTHER_TASK_CORE 1
@@ -10,6 +10,18 @@
 
 
 #define ACTIVE_CAR_ID                       0 // Cihaz ID
+
+// S3 Logic State Tanımlamaları
+typedef enum {
+    STATE_USB_SETUP,
+    STATE_USB_WAITING,
+    STATE_USB_ENUMERATING,
+    STATE_SYS_ACTIVE,
+    STATE_USB_DISCONNECTED,
+    STATE_SLEEP,
+    
+} s3_logic_state_t;
+
 
 static const uint8_t CAR_MAC_TABLE[][6] = {
 
