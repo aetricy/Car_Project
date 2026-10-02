@@ -2,17 +2,17 @@
 #define PWM_CONTROL_H
 
 #include <stdint.h>
+#include <stdbool.h>
+#include "g29_config.h"
 
-// ESP32-C3 PINOUT 
-#define GYRO_SETTING_PIN  0 
-#define THROTTLE_PWM_PIN  1
-#define STEERING_PWM_PIN  3
+// --- Ayar (Config) ve Matematik Fonksiyonları ---
+void init_default_config(void);
+void update_pwm_config(const car_config_packet_t *new_config);
+uint16_t apply_config_to_pwm(uint16_t raw_pwm, bool is_steering);
 
-// Sistem Başlatma
+// --- Donanım (PWM) Fonksiyonları ---
 void init_pwm(void);
-
-// 1000 - 2000 mikrosaniye aralığında sinyal gönderen ana fonksiyonlar
 void set_steering_us(uint16_t raw_us);
 void set_throttle_us(uint16_t raw_us);
 
-#endif
+#endif // PWM_CONTROL_H

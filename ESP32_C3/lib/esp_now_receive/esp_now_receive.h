@@ -8,6 +8,6 @@
 void init_esp_now_receiver(void);
 
 // Yeni veri varsa out_data içine kopyalar ve true döndürür. Yoksa false döndürür.
-bool esp_now_get_latest_data(g29_telemetry_t *out_data);
+bool esp_now_get_latest_data(car_drive_packet_t *out_data);
 
 #endif // ESP_NOW_RECEIVER_H

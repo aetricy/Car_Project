@@ -39,7 +39,7 @@ static void esp_now_sender_task(void *arg) {
         }
 
         // 4. --- SIKI 50HZ KİLİDİ ---
-        vTaskDelay(pdMS_TO_TICKS(20)); 
+        vTaskDelay(pdMS_TO_TICKS(40)); 
         
         // Birikmiş uyanma sinyallerini temizle
         ulTaskNotifyTake(pdTRUE, 0); 

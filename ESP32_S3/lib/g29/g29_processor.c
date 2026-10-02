@@ -56,8 +56,26 @@ void g29_process_raw_data(const uint8_t *raw_data, int len, g29_telemetry_t *out
     // if ((raw_data[X] & LOGIWHEEL_BTN_GEAR) != 0) { out_telemetry->buttons_state |= BTN_GEAR_UP; }
 }
 
-void g29_apply_drift_assist(g29_telemetry_t *telemetry, float gyro_yaw_rate) {
-    // Asistan sonrası değerin limitleri aşmasını engelleme (Safety Clamp)
-    if (telemetry->steering > 1.0f) telemetry->steering = 1.0f;
-    if (telemetry->steering < -1.0f) telemetry->steering = -1.0f;
+// 2. AŞAMA: Float telemetriyi, C3 Alıcısı için 1000-2000 PWM formatına çevirir
+void g29_create_drive_packet(const g29_telemetry_t *telemetry, car_drive_packet_t *out_packet) {
+    
+    out_packet->packet_type = PKT_TYPE_DRIVE;
+
+    // 1. Direksiyonu 1000 - 2000 aralığına çevirme
+    // telemetry->steering: -1.0 (Tam Sol) ile +1.0 (Tam Sağ) arasıdır
+    out_packet->steering = 1500 + (int16_t)(telemetry->steering * 500.0f);
+
+    // 2. Pedalları Birleştirme (Kombine RC ESC Mantığı)
+    // Merkez 1500. Gaza basıldıkça 2000'e, frene basıldıkça 1000'e gider.
+    uint16_t combined_throttle = 1500;
+    
+    if (telemetry->throttle > 0.0f) {
+        combined_throttle = 1500 + (uint16_t)(telemetry->throttle * 500.0f);
+    } 
+    else if (telemetry->brake > 0.0f) {
+        combined_throttle = 1500 - (uint16_t)(telemetry->brake * 500.0f);
+    }
+
+    out_packet->throttle = combined_throttle;
+    
 }

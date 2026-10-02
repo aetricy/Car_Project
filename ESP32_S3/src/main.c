@@ -31,7 +31,6 @@ SemaphoreHandle_t ui_data_mutex;
 g29_telemetry_t   ui_shared_telemetry;
 
 SemaphoreHandle_t car_feedback_mutex;
-car_feedback_packet_t shared_car_feedback;
 
 QueueHandle_t g29_input_queue;
 QueueHandle_t espnow_tx_queue; 
@@ -142,12 +141,10 @@ void Logic_Task(void *pvParameters) {
                     xTimerReset(sleep_timer, 0); 
                     
                     car_drive_packet_t drive_packet;
-                    drive_packet.packet_type = PKT_TYPE_DRIVE;
+
+                    g29_create_drive_packet(&incoming_telemetry, &drive_packet);
+
                     drive_packet.packet_id   = global_packet_counter++;
-                    
-                    drive_packet.steering = (int8_t)(incoming_telemetry.steering * 127.0f);
-                    drive_packet.throttle = (uint8_t)(incoming_telemetry.throttle * 255.0f);
-                    drive_packet.brake    = (uint8_t)(incoming_telemetry.brake * 255.0f);
 
                     xQueueSend(espnow_tx_queue, &drive_packet, 0);
 
@@ -157,10 +154,10 @@ void Logic_Task(void *pvParameters) {
                     }
                     
                     if (LOG_WHEELSTATE){
-                        ESP_LOGI("TELEMETRY", "Str: %5.2f (->%d) | Thr: %4.2f (->%u) | Brk: %4.2f (->%u)",  
+                        ESP_LOGI("TELEMETRY", "Str: %5.2f (->%d) | Thr: %4.2f (->%u) Packet ID: %d",  
                             incoming_telemetry.steering, drive_packet.steering,
                             incoming_telemetry.throttle, drive_packet.throttle,
-                            incoming_telemetry.brake, drive_packet.brake
+                            drive_packet.packet_id
                         );
                     }
                 }
