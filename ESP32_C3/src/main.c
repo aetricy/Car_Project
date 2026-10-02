@@ -1,11 +1,22 @@
 #include <stdio.h>
+#include <string.h>
+
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
 
 #include "g29_config.h"
 #include "esp_now_receive.h" // Modüler kütüphanemiz eklendi
+#include "pwm_control.h"
 
-#define LOG_MODE 1
+#define LOG_MODE 0
+
+
+// Başlangıç değerleri nötr/merkez olan 1500us olarak ayarlandı
+volatile uint16_t current_steering_us = 2000;
+volatile uint16_t current_throttle_us = 1300;
+
+
+
 
 void app_main(void) {
     // 1. Seri portun kararlı hale gelmesi için kısa bekleme
@@ -17,17 +28,14 @@ void app_main(void) {
     // Main içinde kullanacağımız veri paketi
     g29_telemetry_t current_telemetry;
 
-    // 3. Ana Döngü
-    while (LOG_MODE) {
-        
-        if (esp_now_get_latest_data(&current_telemetry)) {
-            
-            // Logu burada, ana döngünün rahatlığında bas
-            printf("TELEMETRY -> Steering: %5.2f | Throttle: %4.2f | Brake: %4.2f\n", 
-                     current_telemetry.steering, 
-                     current_telemetry.throttle, 
-                     current_telemetry.brake);
-            }
+    init_pwm();
+
+
+    // 3. Ana Dongu
+    while (1) {
+        // Mikrosaniye değerlerini donanıma yaz
+        set_steering_us(current_steering_us);
+        set_throttle_us(current_throttle_us);
 
         vTaskDelay(pdMS_TO_TICKS(10)); 
     }
