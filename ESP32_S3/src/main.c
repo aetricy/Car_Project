@@ -119,10 +119,14 @@ void ESPNOW_Task(void *pvParameters) {
 // -------------------------------------------------------------
 void Logic_Task(void *pvParameters) {
     g29_telemetry_t incoming_telemetry;
+    static g29_telemetry_t last_telemetry = {0};
+
     current_system_state = STATE_USB_WAITING; 
     
     // Uykuya geçişte veya hata durumunda tek seferlik komut yollamak için bayrak
     bool sleep_command_sent = false;
+    TickType_t xLastWakeTime = xTaskGetTickCount();
+    const TickType_t xFrequency = pdMS_TO_TICKS(20);
 
     while(1) {
         switch (current_system_state) {
@@ -134,33 +138,53 @@ void Logic_Task(void *pvParameters) {
                 break;
 
             case STATE_SYS_ACTIVE:
-                sleep_command_sent = false; // Aktif moda dönünce bayrağı sıfırla
+                sleep_command_sent = false;
+                bool new_data = false;
 
-                if (xQueueReceive(g29_input_queue, &incoming_telemetry, pdMS_TO_TICKS(20)) == pdTRUE) {
-                    
+                // 1. SADECE OKUMA (Bekleme süresi 0!)
+                // Kuyrukta yeni veri varsa alıp last_telemetry'yi günceller. Yoksa anında alt satıra geçer.
+                while (xQueueReceive(g29_input_queue, &incoming_telemetry, 0) == pdTRUE) {
+                    last_telemetry = incoming_telemetry;
+                    new_data = true;
+                }
+
+                // Yeni veri geldiyse uyku timer'ını sıfırla ve UI'yi güncelle
+                if (new_data) {
                     xTimerReset(sleep_timer, 0); 
-                    
-                    car_drive_packet_t drive_packet;
-
-                    g29_create_drive_packet(&incoming_telemetry, &drive_packet);
-
-                    drive_packet.packet_id   = global_packet_counter++;
-
-                    xQueueSend(espnow_tx_queue, &drive_packet, 0);
-
                     if(xSemaphoreTake(ui_data_mutex, 0) == pdTRUE) { 
-                        ui_shared_telemetry = incoming_telemetry;
+                        ui_shared_telemetry = last_telemetry;
                         xSemaphoreGive(ui_data_mutex);
                     }
-                    
-                    if (LOG_WHEELSTATE){
-                        ESP_LOGI("TELEMETRY", "Str: %5.2f (->%d) | Thr: %4.2f (->%u) Packet ID: %d",  
-                            incoming_telemetry.steering, drive_packet.steering,
-                            incoming_telemetry.throttle, drive_packet.throttle,
-                            drive_packet.packet_id
-                        );
-                    }
                 }
+
+                // ---------------------------------------------------------
+                // 2. SÜREKLİ GÖNDERME BÖLÜMÜ (İf bloğunun DIŞINDA!)
+                // Yeni veri gelse de gelmese de BURASI KESİN ÇALIŞIR.
+                // ---------------------------------------------------------
+                car_drive_packet_t drive_packet;
+                
+                // En son bilinen direksiyon/pedal durumunu pakete dönüştür
+                g29_create_drive_packet(&last_telemetry, &drive_packet);
+                drive_packet.packet_id = global_packet_counter++;
+
+                // Paketi gönderici task'ın kuyruğuna at
+                if (xQueueSend(espnow_tx_queue, &drive_packet, 0) != pdTRUE) {
+                    //ESP_LOGE(TAG, "SIRA DOLU! ESP-NOW göndericisi yetişemiyor.");
+                }
+
+                // Log yazdırma (Saniyede 1 kez)
+                if (LOG_WHEELSTATE){
+                    ESP_LOGI("TELEMETRY", "Str: %d | Thr: %d | Packet ID: %u",  
+                        drive_packet.steering, 
+                        drive_packet.throttle, 
+                        drive_packet.packet_id
+                    );
+                }
+
+                // 3. KESİN 50HZ KİLİDİ
+                // Döngünün başından itibaren tam 20ms dolana kadar görev uyur.
+                // G29'dan veri gelmese bile 20ms sonra uyanıp tekrar yollar.
+                vTaskDelayUntil(&xLastWakeTime, xFrequency);
                 break;
 
             case STATE_SLEEP:
