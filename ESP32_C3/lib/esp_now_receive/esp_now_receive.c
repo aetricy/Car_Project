@@ -6,21 +6,40 @@
 #include "esp_now.h"
 #include "nvs_flash.h"
 #include "esp_mac.h"
-#include "esp_log.h"
 
+#include "g29_config.h"
 #include "esp_now_receive.h"
+#include "pwm_control.h" 
 
-static const char *TAG = "ESP_NOW_RX";
+// --- LOGLAMA MAKROSU ---
+#define DEBUG_LOG_ENABLE  1  
+#if DEBUG_LOG_ENABLE
+    #define RC_PRINT(fmt, ...) printf(fmt, ##__VA_ARGS__)
+#else
+    #define RC_PRINT(fmt, ...) 
+#endif
 
-// Sadece bu dosyaya özel (static) değişkenler. Dışarıdan doğrudan erişilemez!
-static g29_telemetry_t latest_telemetry;
+// main.c dosyasındaki global değişkenlere erişim
+extern volatile uint16_t raw_steering_us;
+extern volatile uint16_t raw_throttle_us;
+extern volatile int current_state; 
+
+#define STATE_WAITING  1
+#define STATE_ACTIVE   2
+#define STATE_FAILSAFE 3
+#define STATE_SLEEP    4
+
+// FreeRTOS Timer yerine, paketin geldiği son anı tutacak değişken
+volatile uint32_t last_packet_time = 0; 
+
+// Güvenli veri okuma için dahili değişkenler
+static car_drive_packet_t latest_drive_packet;
 static volatile bool new_data_available = false;
 
-// ESP-NOW Paket Alım (Receive) Callback - IŞIK HIZINDA ÇALIŞMALI
 static void on_data_recv(const esp_now_recv_info_t *recv_info, const uint8_t *data, int len) {
-    if (len == sizeof(g29_telemetry_t)) {
+    if (len == sizeof(car_drive_packet_t)) {
         // 1. Veriyi HIZLICA kopyala
-        memcpy(&latest_telemetry, data, sizeof(g29_telemetry_t));
+        memcpy(&latest_drive_packet, data, sizeof(car_drive_packet_t));
         
         // 2. Yeni veri var bayrağını kaldır
         new_data_available = true;
@@ -28,7 +47,6 @@ static void on_data_recv(const esp_now_recv_info_t *recv_info, const uint8_t *da
 }
 
 void init_esp_now_receiver(void) {
-    // 1. NVS Başlat
     esp_err_t ret = nvs_flash_init();
     if (ret == ESP_ERR_NVS_NO_FREE_PAGES || ret == ESP_ERR_NVS_NEW_VERSION_FOUND) {
         ESP_ERROR_CHECK(nvs_flash_erase());
@@ -36,10 +54,7 @@ void init_esp_now_receiver(void) {
     }
     ESP_ERROR_CHECK(ret);
 
-    // 2. Wi-Fi ve İstasyon Modunu Başlat
     ESP_ERROR_CHECK(esp_netif_init());
-    
-    // (Olası Core paniklerini engellemek için varsayılan olay döngüsünü ekledik)
     ESP_ERROR_CHECK(esp_event_loop_create_default());
 
     wifi_init_config_t cfg = WIFI_INIT_CONFIG_DEFAULT();
@@ -47,27 +62,23 @@ void init_esp_now_receiver(void) {
     ESP_ERROR_CHECK(esp_wifi_set_mode(WIFI_MODE_STA));
     ESP_ERROR_CHECK(esp_wifi_start());
 
-    // 3. Kartın Kendi MAC Adresini Oku ve Yazdır
     uint8_t mac[6];
     esp_read_mac(mac, ESP_MAC_WIFI_STA);
-    printf("\n==================================================\n");
-    printf("ESP32-C3 Alici MAC Adresi: %02X:%02X:%02X:%02X:%02X:%02X\n", 
+    RC_PRINT("\n==================================================\n");
+    RC_PRINT("ESP32-C3 Alici MAC: %02X:%02X:%02X:%02X:%02X:%02X\n", 
            mac[0], mac[1], mac[2], mac[3], mac[4], mac[5]);
-    printf("==================================================\n\n");
+    RC_PRINT("==================================================\n\n");
 
-    // 4. ESP-NOW Başlat ve Callback Kaydet
     ESP_ERROR_CHECK(esp_now_init());
     ESP_ERROR_CHECK(esp_now_register_recv_cb(on_data_recv));
 
-    ESP_LOGI(TAG, "ESP-NOW Alici modulu basariyla baslatildi.");
+    RC_PRINT("[INFO] ESP-NOW Alici modulu basariyla baslatildi.\n");
 }
 
 // Ana döngünün veriyi güvenle çekmesi için yazılmış API Fonksiyonu
-bool esp_now_get_latest_data(g29_telemetry_t *out_data) {
+bool esp_now_get_latest_data(car_drive_packet_t *out_data) {
     if (new_data_available) {
-        // Veriyi dışarıya (main'e) kopyala
-        memcpy(out_data, &latest_telemetry, sizeof(g29_telemetry_t));
-        // Bayrağı indir ki aynı paketi iki kere okumayalım
+        memcpy(out_data, &latest_drive_packet, sizeof(car_drive_packet_t));
         new_data_available = false;
         return true;
     }

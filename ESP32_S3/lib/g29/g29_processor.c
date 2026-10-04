@@ -3,20 +3,15 @@
 
 // Direksiyon verisini -1.0 ile 1.0 arasına haritalar
 static float map_steering(uint16_t raw_val) {
-    // 16-bit çözünürlük: Merkez 32768
     float val = ((float)raw_val - 32768.0f) / 32768.0f;
     
-    // Donanımsal sınırlandırma (Clamp)
     if (val > 1.0f) val = 1.0f;
     if (val < -1.0f) val = -1.0f;
 
-    // 1. Adım: Değer ölü bölgenin içindeyse tam 0.0 (Merkez) gönder
     if (val > -STEERING_DEADZONE && val < STEERING_DEADZONE) {
         return 0.0f;
     }
 
-    // 2. Adım: Değer ölü bölgeden çıktığında atlama (jump) yapmasını engelle.
-    // 0.0'dan pürüzsüzce başlayıp 1.0'a veya -1.0'a doğru lineer olarak ölçeklendir.
     if (val > 0.0f) {
         return (val - STEERING_DEADZONE) / (1.0f - STEERING_DEADZONE);
     } else {
@@ -26,24 +21,20 @@ static float map_steering(uint16_t raw_val) {
 
 // Pedal verilerini 0.0 ile 1.0 arasına haritalar ve ölü bölge uygular
 static float map_pedal(uint8_t raw_val) {
-    // Pedallar ters çalışır: 255 = Basılmamış, 0 = Tam Basılı
     float val = (255.0f - (float)raw_val) / 255.0f;
     
-    // Sınırlandırma (Clamp)
     if (val > 1.0f) val = 1.0f;
     if (val < 0.0f) val = 0.0f;
 
-    // 1. Adım: Ölü bölge kontrolü
     if (val < PEDAL_DEADZONE) {
         return 0.0f;
     }
 
-    // 2. Adım: Atlama yapmaması için yumuşak kalkış ölçeklendirmesi
     return (val - PEDAL_DEADZONE) / (1.0f - PEDAL_DEADZONE);
 }
 
 void g29_process_raw_data(const uint8_t *raw_data, int len, g29_telemetry_t *out_telemetry) {
-    if (len < 8) return; 
+    if (len < 9) return; // Güvenli sınır kontrolü (8. indeks dahil okunuyor) 
 
     // 1. Direksiyon Açısı (4. ve 5. bayt)
     uint16_t raw_steering = raw_data[4] | ((raw_data[5] << 8)); 
@@ -54,18 +45,37 @@ void g29_process_raw_data(const uint8_t *raw_data, int len, g29_telemetry_t *out
     out_telemetry->brake    = map_pedal(raw_data[7]);
     out_telemetry->clutch   = map_pedal(raw_data[8]);
 
-    // 3. Örnek Butonlar (Bit maskeleme ile)
+    // 3. Butonları Tek Bir Bitmask (buttons_state) İçinde Topla
+    out_telemetry->buttons_state = 0;
+
+    /*
     out_telemetry->button_plus   = (raw_data[2] & LOGIWHEEL_BTN_PLUS) != 0;
-    out_telemetry->button_minus = (raw_data[3] & LOGIWHEEL_BTN_MINUS) != 0;
+    out_telemetry->button_minus = (raw_data[3] & LOGIWHEEL_BTN_MINUS) != 0;*/
+
+    // İleride eklenebilecek diğer butonlar buraya eklenebilir:
+    // if ((raw_data[X] & LOGIWHEEL_BTN_GEAR) != 0) { out_telemetry->buttons_state |= BTN_GEAR_UP; }
 }
 
-
-// IN DEVELOPING...
-void g29_apply_drift_assist(g29_telemetry_t *telemetry, float gyro_yaw_rate) {
-    // Örnek: Jiroskoptan gelen savrulma değerine göre direksiyona otonom müdahale
-    // telemetry->steering -= gyro_yaw_rate * 0.1f;
+// 2. AŞAMA: Float telemetriyi, C3 Alıcısı için 1000-2000 PWM formatına çevirir
+void g29_create_drive_packet(const g29_telemetry_t *telemetry, car_drive_packet_t *out_packet) {
     
-    // Asistan sonrası değerin limitleri aşmasını engelleme (Safety Clamp)
-    if (telemetry->steering > 1.0f) telemetry->steering = 1.0f;
-    if (telemetry->steering < -1.0f) telemetry->steering = -1.0f;
+    out_packet->packet_type = PKT_TYPE_DRIVE;
+
+    // 1. Direksiyonu 1000 - 2000 aralığına çevirme
+    // telemetry->steering: -1.0 (Tam Sol) ile +1.0 (Tam Sağ) arasıdır
+    out_packet->steering = 1500 + (int16_t)(telemetry->steering * 500.0f);
+
+    // 2. Pedalları Birleştirme (Kombine RC ESC Mantığı)
+    // Merkez 1500. Gaza basıldıkça 2000'e, frene basıldıkça 1000'e gider.
+    uint16_t combined_throttle = 1500;
+    
+    if (telemetry->throttle > 0.0f) {
+        combined_throttle = 1500 + (uint16_t)(telemetry->throttle * 500.0f);
+    } 
+    else if (telemetry->brake > 0.0f) {
+        combined_throttle = 1500 - (uint16_t)(telemetry->brake * 500.0f);
+    }
+
+    out_packet->throttle = combined_throttle;
+    
 }
