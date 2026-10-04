@@ -14,39 +14,31 @@
 static const char *TAG = "ESP_NOW_SENDER";
 uint8_t target_car_mac[6];
 
-// RTOS Nesneleri (Artık hafif car_drive_packet_t paylaşıyor)
-static SemaphoreHandle_t drive_mutex = NULL;
+
+
+
+
+extern QueueHandle_t espnow_tx_queue;
+
+static SemaphoreHandle_t tx_mutex = NULL;
 static TaskHandle_t espnow_tx_task_handle = NULL;
-static car_drive_packet_t shared_drive_packet;
 
-
-// ESP-NOW Gönderici Task
+// ESP-NOW Gönderici Task (Doğrudan Kuyruktan Okur)
 static void esp_now_sender_task(void *arg) {
-    car_drive_packet_t packet;
+    espnow_tx_item_t item;
     
     while (1) {
-        // 1. BEKLEME (UYKU) NOKTASI
-        // main.c'den xTaskNotifyGive() gelene kadar burada SÜRESİZ bekler.
-        ulTaskNotifyTake(pdTRUE, portMAX_DELAY);
-
-        // 2. UYANDIK! Güncel hafif paketi Mutex ile güvenle al
-        if (xSemaphoreTake(drive_mutex, pdMS_TO_TICKS(5)) == pdTRUE) {
-            packet = shared_drive_packet;
-            xSemaphoreGive(drive_mutex);
-            
-            // 3. Havaya fırlat (Sadece 5 baytlık optimize paket)
-            esp_now_send(target_car_mac, (uint8_t *)&packet, sizeof(car_drive_packet_t));
+        // Kuyrukta veri olana kadar SÜRESİZ bekler, CPU harcamaz
+        if (xQueueReceive(espnow_tx_queue, &item, portMAX_DELAY) == pdTRUE) {
+            // Sadece paketin gerçek boyutu kadarını havaya fırlat (Çöpler gitmez)
+            esp_now_send(target_car_mac, (uint8_t *)&item.payload, item.length);
         }
-
-
     }
 }
 
 
-
 void init_esp_now_sender(void) {
     memcpy(target_car_mac, CAR_MAC_TABLE[ACTIVE_CAR_ID], 6);
-    drive_mutex = xSemaphoreCreateMutex();
     
     // NVS Kurulumu
     esp_err_t ret = nvs_flash_init();
@@ -88,22 +80,3 @@ void init_esp_now_sender(void) {
     );
 }
 
-
-
-
-// Ana uygulamadan (Artık ESPNOW_Task içindeki kuyruktan) çağrılan fonksiyon
-void send_telemetry_to_car(const car_drive_packet_t *packet) {
-    if (drive_mutex != NULL) {
-        
-        // 1. Hafif sürüş paketini güvenle shared belleğe yaz
-        if (xSemaphoreTake(drive_mutex, portMAX_DELAY) == pdTRUE) {
-            shared_drive_packet = *packet;
-            xSemaphoreGive(drive_mutex);
-        }
-        
-        // 2. Sender Task'ı uyandır
-        if (espnow_tx_task_handle != NULL) {
-            xTaskNotifyGive(espnow_tx_task_handle);
-        }
-    }
-}

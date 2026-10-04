@@ -30,7 +30,7 @@
 // ==========================================
 typedef struct __attribute__((packed)) {
     uint8_t  packet_type;    // PKT_TYPE_DRIVE (0x01)
-    uint8_t  packet_id;      // Hangi aracın (1-6)
+    uint8_t  packet_id;     
     
     // PWM formatında gönderilecek (1000-2000 arası, Merkez: 1500)
     uint16_t steering;       // 1000 (Tam Sol) - 2000 (Tam Sağ)
@@ -42,6 +42,7 @@ typedef struct __attribute__((packed)) {
 // ==========================================
 typedef struct __attribute__((packed)) {
     uint8_t  packet_type;    // PKT_TYPE_COMMAND (0x02)
+
     uint8_t  command_id;     // CMD_SLEEP_ENTER, CMD_FAILSAFE_STOP vb.
     uint8_t  parameter;      // Ek veri (Gerekirse mod ID'si vb. taşımak için)
 } car_command_packet_t;
@@ -51,8 +52,10 @@ typedef struct __attribute__((packed)) {
 // ==========================================
 typedef struct __attribute__((packed)) {
     uint8_t  packet_type;     // PKT_TYPE_CONFIG (0x03)
-    uint8_t  vehicle_id;      // Hangi aracın ayarları? (Örn: 1-6)
     
+    // General Ayarlar
+    uint8_t  st_gyro_gain; // -100 100
+
     // Direksiyon (Steering) Ayarları
     int8_t   st_sub_trim;     // Merkez kaydırma (-100 to 100)
     uint8_t  st_epa_left;     // Sol End Point (0-100%)
@@ -78,5 +81,15 @@ typedef struct {
     float clutch;            // 0.0 ile 1.0
     uint16_t buttons_state;  // Tüm butonlar (LED, Ekran ve UI için S3 içinde kalır)
 } g29_telemetry_t;
+
+// --- GÖNDERİCİ TX KAPSAYICI (UNION) ---
+typedef struct {
+    size_t length; // Havaya fırlatılacak gerçek boyut
+    union {
+        car_drive_packet_t   drive;
+        car_command_packet_t command;
+        car_config_packet_t  config;
+    } payload;
+} espnow_tx_item_t;
 
 #endif

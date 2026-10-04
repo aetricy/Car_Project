@@ -12,8 +12,8 @@
 #endif
 
 // PWM Pin Tanımları
-#define STEERING_PWM_PIN 1
-#define THROTTLE_PWM_PIN 3
+#define STEERING_PWM_PIN 3
+#define THROTTLE_PWM_PIN 1
 
 // RAM Üzerindeki Aktif Ayarlar
 static car_config_packet_t current_config;

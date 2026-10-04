@@ -2,6 +2,7 @@
 #include <string.h>
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
+#include "freertos/queue.h" // Kuyruk kütüphanesi eklendi
 #include "esp_wifi.h"
 #include "esp_now.h"
 #include "nvs_flash.h"
@@ -11,7 +12,6 @@
 #include "esp_now_receive.h"
 #include "pwm_control.h" 
 
-// --- LOGLAMA MAKROSU ---
 #define DEBUG_LOG_ENABLE  1  
 #if DEBUG_LOG_ENABLE
     #define RC_PRINT(fmt, ...) printf(fmt, ##__VA_ARGS__)
@@ -19,7 +19,6 @@
     #define RC_PRINT(fmt, ...) 
 #endif
 
-// main.c dosyasındaki global değişkenlere erişim
 extern volatile uint16_t raw_steering_us;
 extern volatile uint16_t raw_throttle_us;
 extern volatile int current_state; 
@@ -29,24 +28,41 @@ extern volatile int current_state;
 #define STATE_FAILSAFE 3
 #define STATE_SLEEP    4
 
-// FreeRTOS Timer yerine, paketin geldiği son anı tutacak değişken
 volatile uint32_t last_packet_time = 0; 
 
-// Güvenli veri okuma için dahili değişkenler
+// --- VERİ SAKLAMA ALANLARI ---
+// 1. Sürüş verisi global kalır (Sürekli güncellenir, ezilmesi sorun değil)
 static car_drive_packet_t latest_drive_packet;
 static volatile bool new_data_available = false;
 
+// 2. Komut ve Ayarlar için Kuyruklar (Asla kaybolmamalı)
+QueueHandle_t rx_command_queue;
+QueueHandle_t rx_config_queue;
+
 static void on_data_recv(const esp_now_recv_info_t *recv_info, const uint8_t *data, int len) {
-    if (len == sizeof(car_drive_packet_t)) {
-        // 1. Veriyi HIZLICA kopyala
-        memcpy(&latest_drive_packet, data, sizeof(car_drive_packet_t));
-        
-        // 2. Yeni veri var bayrağını kaldır
+    if (len == 0 || data == NULL) return;
+
+    // Gelen paketin tipini ilk bayttan oku
+    uint8_t packet_type = data[0];
+
+    if (packet_type == PKT_TYPE_DRIVE && len == sizeof(car_drive_packet_t)) {
+        memcpy(&latest_drive_packet, data, len);
         new_data_available = true;
+    } 
+    else if (packet_type == PKT_TYPE_COMMAND && len == sizeof(car_command_packet_t)) {
+        // Callback içinde kuyruğa gönder (bekleme 0)
+        xQueueSend(rx_command_queue, data, 0);
+    } 
+    else if (packet_type == PKT_TYPE_CONFIG && len == sizeof(car_config_packet_t)) {
+        xQueueSend(rx_config_queue, data, 0);
     }
 }
 
 void init_esp_now_receiver(void) {
+    // Alıcı kuyruklarını oluştur
+    rx_command_queue = xQueueCreate(5, sizeof(car_command_packet_t));
+    rx_config_queue  = xQueueCreate(3, sizeof(car_config_packet_t));
+
     esp_err_t ret = nvs_flash_init();
     if (ret == ESP_ERR_NVS_NO_FREE_PAGES || ret == ESP_ERR_NVS_NEW_VERSION_FOUND) {
         ESP_ERROR_CHECK(nvs_flash_erase());
@@ -66,7 +82,7 @@ void init_esp_now_receiver(void) {
     esp_read_mac(mac, ESP_MAC_WIFI_STA);
     RC_PRINT("\n==================================================\n");
     RC_PRINT("ESP32-C3 Alici MAC: %02X:%02X:%02X:%02X:%02X:%02X\n", 
-           mac[0], mac[1], mac[2], mac[3], mac[4], mac[5]);
+             mac[0], mac[1], mac[2], mac[3], mac[4], mac[5]);
     RC_PRINT("==================================================\n\n");
 
     ESP_ERROR_CHECK(esp_now_init());
@@ -75,12 +91,28 @@ void init_esp_now_receiver(void) {
     RC_PRINT("[INFO] ESP-NOW Alici modulu basariyla baslatildi.\n");
 }
 
-// Ana döngünün veriyi güvenle çekmesi için yazılmış API Fonksiyonu
+// Sürüş verisini çek (Ana döngü kullanır)
 bool esp_now_get_latest_data(car_drive_packet_t *out_data) {
     if (new_data_available) {
         memcpy(out_data, &latest_drive_packet, sizeof(car_drive_packet_t));
         new_data_available = false;
         return true;
+    }
+    return false;
+}
+
+// Komut verisini çek (Ana döngü kullanır)
+bool esp_now_get_command_data(car_command_packet_t *out_data) {
+    if (rx_command_queue != NULL) {
+        return (xQueueReceive(rx_command_queue, out_data, 0) == pdTRUE);
+    }
+    return false;
+}
+
+// Ayar verisini çek (Ana döngü kullanır)
+bool esp_now_get_config_data(car_config_packet_t *out_data) {
+    if (rx_config_queue != NULL) {
+        return (xQueueReceive(rx_config_queue, out_data, 0) == pdTRUE);
     }
     return false;
 }

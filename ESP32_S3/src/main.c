@@ -90,29 +90,6 @@ void on_g29_state_changed(g29_state_t state) {
     }
 }
 
-// -------------------------------------------------------------
-// ESP-NOW GÖNDERİCİ TASK (Core 1) - G29 Aktif Olana Kadar Bekler
-// -------------------------------------------------------------
-void ESPNOW_Task(void *pvParameters) {
-    car_drive_packet_t packet_to_send;
-    
-    ESP_LOGI(TAG, "ESPNOW_Task Beklemede...");
-
-    // SİSTEM AKTİF OLANA KADAR RADROYU BAŞLATMA
-    // Yani kullanıcı G29'u takıp system_state == STATE_SYS_ACTIVE olana kadar burada kilitli kalır.
-    while (current_system_state != STATE_SYS_ACTIVE) {
-        vTaskDelay(pdMS_TO_TICKS(100));
-    }
-
-    ESP_LOGI(TAG, "G29 Aktif Oldu! ESP-NOW Kuruluyor...");
-    init_esp_now_sender();
-
-    while(1) {
-        if (xQueueReceive(espnow_tx_queue, &packet_to_send, portMAX_DELAY) == pdTRUE) {
-            send_telemetry_to_car(&packet_to_send);
-        }
-    }
-}
 
 // -------------------------------------------------------------
 // 3. ANA DAĞITICI TASK (Logic Task - Core 1)
@@ -120,11 +97,13 @@ void ESPNOW_Task(void *pvParameters) {
 void Logic_Task(void *pvParameters) {
     g29_telemetry_t incoming_telemetry;
     static g29_telemetry_t last_telemetry = {0};
-
-    current_system_state = STATE_USB_WAITING; 
     
-    // Uykuya geçişte veya hata durumunda tek seferlik komut yollamak için bayrak
+    current_system_state = STATE_USB_WAITING; 
     bool sleep_command_sent = false;
+    bool esp_now_started = false; // ESP-NOW başlatıldı mı kontrolü
+    bool car_needs_wakeup = true;
+
+
     TickType_t xLastWakeTime = xTaskGetTickCount();
     const TickType_t xFrequency = pdMS_TO_TICKS(20);
 
@@ -138,17 +117,35 @@ void Logic_Task(void *pvParameters) {
                 break;
 
             case STATE_SYS_ACTIVE:
+                // SİSTEM İLK AKTİF OLDUĞUNDA ESP-NOW'U BAŞLAT
+                if (!esp_now_started) {
+                    ESP_LOGI(TAG, "G29 Aktif Oldu! ESP-NOW Kuruluyor...");
+                    init_esp_now_sender();
+                    esp_now_started = true;
+                }
+
+                if (car_needs_wakeup) {
+                    espnow_tx_item_t wake_item;
+                    memset(&wake_item, 0, sizeof(espnow_tx_item_t));
+                    wake_item.length = sizeof(car_command_packet_t);
+                    wake_item.payload.command.packet_type = PKT_TYPE_COMMAND;
+                    wake_item.payload.command.command_id  = CMD_WAKE_UP;
+                    wake_item.payload.command.parameter   = 0;
+
+                    xQueueSend(espnow_tx_queue, &wake_item, 0);
+                    car_needs_wakeup = false; // Uyandırdık, bayrağı indir
+                    ESP_LOGI(TAG, "Araca WAKE_UP (Failsafe/Uyku Cikisi) Komutu Gonderildi.");
+                }
+
+
                 sleep_command_sent = false;
                 bool new_data = false;
 
-                // 1. SADECE OKUMA (Bekleme süresi 0!)
-                // Kuyrukta yeni veri varsa alıp last_telemetry'yi günceller. Yoksa anında alt satıra geçer.
                 while (xQueueReceive(g29_input_queue, &incoming_telemetry, 0) == pdTRUE) {
                     last_telemetry = incoming_telemetry;
                     new_data = true;
                 }
 
-                // Yeni veri geldiyse uyku timer'ını sıfırla ve UI'yi güncelle
                 if (new_data) {
                     xTimerReset(sleep_timer, 0); 
                     if(xSemaphoreTake(ui_data_mutex, 0) == pdTRUE) { 
@@ -156,79 +153,74 @@ void Logic_Task(void *pvParameters) {
                         xSemaphoreGive(ui_data_mutex);
                     }
                 }
-
-                // ---------------------------------------------------------
-                // 2. SÜREKLİ GÖNDERME BÖLÜMÜ (İf bloğunun DIŞINDA!)
-                // Yeni veri gelse de gelmese de BURASI KESİN ÇALIŞIR.
-                // ---------------------------------------------------------
-                car_drive_packet_t drive_packet;
                 
-                // En son bilinen direksiyon/pedal durumunu pakete dönüştür
-                g29_create_drive_packet(&last_telemetry, &drive_packet);
-                drive_packet.packet_id = global_packet_counter++;
+                // --- 2. SÜREKLİ SÜRÜŞ PAKETİ GÖNDERME ---
+                espnow_tx_item_t tx_item;
+                memset(&tx_item, 0, sizeof(espnow_tx_item_t)); // Çöpleri temizle (0x00)
+                tx_item.length = sizeof(car_drive_packet_t);
+                
+                // Telemetriyi union içindeki drive paketine oluştur
+                g29_create_drive_packet(&last_telemetry, &tx_item.payload.drive);
+                tx_item.payload.drive.packet_type = PKT_TYPE_DRIVE; 
+                tx_item.payload.drive.packet_id = global_packet_counter++;
 
-                // Paketi gönderici task'ın kuyruğuna at
-                if (xQueueSend(espnow_tx_queue, &drive_packet, 0) != pdTRUE) {
-                    //ESP_LOGE(TAG, "SIRA DOLU! ESP-NOW göndericisi yetişemiyor.");
+                if (xQueueSend(espnow_tx_queue, &tx_item, 0) != pdTRUE) {
+                    // SIRA DOLU hatası
                 }
 
-                // Log yazdırma (Saniyede 1 kez)
                 if (LOG_WHEELSTATE){
-                    ESP_LOGI("TELEMETRY", "Str: %d | Thr: %d | Packet ID: %u",  
-                        drive_packet.steering, 
-                        drive_packet.throttle, 
-                        drive_packet.packet_id
-                    );
+                    ESP_LOGI("TELEMETRY", "Str: %d | Thr: %d | ID: %u",  
+                        tx_item.payload.drive.steering, 
+                        tx_item.payload.drive.throttle, 
+                        tx_item.payload.drive.packet_id);
                 }
 
-                // 3. KESİN 50HZ KİLİDİ
-                // Döngünün başından itibaren tam 20ms dolana kadar görev uyur.
-                // G29'dan veri gelmese bile 20ms sonra uyanıp tekrar yollar.
                 vTaskDelayUntil(&xLastWakeTime, xFrequency);
                 break;
 
             case STATE_SLEEP:
-                // 1. Uykuya ilk kez girildiyse arabaya "UYKUYA GEÇ" komutu fırlat
                 if (!sleep_command_sent) {
-                    car_command_packet_t cmd_packet = {
-                        .packet_type = PKT_TYPE_COMMAND,
-                        .command_id  = CMD_SLEEP_ENTER,
-                        .parameter   = 0
-                    };
-                    // Arabaya acil komut paketini gönder
-                    xQueueSend(espnow_tx_queue, &cmd_packet, 0);
+                    espnow_tx_item_t cmd_item;
+                    memset(&cmd_item, 0, sizeof(espnow_tx_item_t));
+                    cmd_item.length = sizeof(car_command_packet_t);
+                    cmd_item.payload.command.packet_type = PKT_TYPE_COMMAND;
+                    cmd_item.payload.command.command_id  = CMD_SLEEP_ENTER;
+                    cmd_item.payload.command.parameter   = 0;
+
+                    xQueueSend(espnow_tx_queue, &cmd_item, 0);
                     sleep_command_sent = true;
-                    ESP_LOGW(TAG, "Araca UYKU Komutu (CMD_SLEEP_ENTER) Gönderildi.");
+                    ESP_LOGW(TAG, "Araca UYKU Komutu Gonderildi.");
                 }
 
-                // Direksiyondan girdi gelirse uyan
                 if (xQueueReceive(g29_input_queue, &incoming_telemetry, pdMS_TO_TICKS(100)) == pdTRUE) {
-                    ESP_LOGI(TAG, "Araca UYANMA Komutu (CMD_WAKE_UP) Gönderildi.");
+                    ESP_LOGI(TAG, "Araca UYANMA Komutu Gonderildi.");
                     
-                    // Arabaya "UYAN" komutu fırlat
-                    car_command_packet_t wake_packet = {
-                        .packet_type = PKT_TYPE_COMMAND,
-                        .command_id  = CMD_WAKE_UP,
-                        .parameter   = 0
-                    };
-                    xQueueSend(espnow_tx_queue, &wake_packet, 0);
+                    espnow_tx_item_t wake_item;
+                    memset(&wake_item, 0, sizeof(espnow_tx_item_t));
+                    wake_item.length = sizeof(car_command_packet_t);
+                    wake_item.payload.command.packet_type = PKT_TYPE_COMMAND;
+                    wake_item.payload.command.command_id  = CMD_WAKE_UP;
+                    wake_item.payload.command.parameter   = 0;
 
+                    xQueueSend(espnow_tx_queue, &wake_item, 0);
                     current_system_state = STATE_SYS_ACTIVE;
                 }
                 break;
 
             case STATE_USB_DISCONNECTED:
-                ESP_LOGE(TAG, "USB BAĞLANTISI KOPTU! Acil Failsafe Tetikleniyor...");
+                ESP_LOGE(TAG, "USB KOPTU! Acil Failsafe Tetikleniyor...");
                 
-                // USB koptuğu an arabaya FAILSAFE (Acil Durdurma) komutu fırlat
-                car_command_packet_t failsafe_packet = {
-                    .packet_type = PKT_TYPE_COMMAND,
-                    .command_id  = CMD_FAILSAFE_STOP,
-                    .parameter   = 0
-                };
-                xQueueSend(espnow_tx_queue, &failsafe_packet, 0);
+                espnow_tx_item_t fail_item;
+                memset(&fail_item, 0, sizeof(espnow_tx_item_t));
+                fail_item.length = sizeof(car_command_packet_t);
+                fail_item.payload.command.packet_type = PKT_TYPE_COMMAND;
+                fail_item.payload.command.command_id  = CMD_FAILSAFE_STOP;
+                fail_item.payload.command.parameter   = 0;
 
+                xQueueSend(espnow_tx_queue, &fail_item, 0);
                 xQueueReset(g29_input_queue);
+
+                car_needs_wakeup = true;
                 current_system_state = STATE_USB_WAITING;
                 break;
                 
@@ -238,36 +230,25 @@ void Logic_Task(void *pvParameters) {
         }
     }
 }
-
 void app_main(void) {
-    ESP_LOGI(TAG, "Sistem Başlatılıyor...");
-
+    ESP_LOGI(TAG, "Sistem Baslatiliyor...");
     System_Events = xEventGroupCreate();
     g29_input_queue = xQueueCreate(10, sizeof(g29_telemetry_t));
     ui_data_mutex = xSemaphoreCreateMutex();
     car_feedback_mutex = xSemaphoreCreateMutex();
 
-    // Kuyruk boyutunu komut paketlerini de barındırabilecek boyutta ayarlıyoruz
-    // (car_command_packet_t ve car_drive_packet_t union veya ortak boyut kullanabilir, 
-    // en büyük struct olan car_drive_packet_t baz alınır)
-    espnow_tx_queue = xQueueCreate(10, sizeof(car_drive_packet_t)); 
+    // Kuyruk artık UNION tipini (Kapsayıcıyı) taşıyor
+    espnow_tx_queue = xQueueCreate(10, sizeof(espnow_tx_item_t)); 
     
     sleep_timer = xTimerCreate("Sleep_Timer", pdMS_TO_TICKS(INACTIVITY_TIMEOUT_US / 1000), pdFALSE, (void *)0, sleep_timer_callback);
 
-    if(System_Events == NULL || g29_input_queue == NULL || espnow_tx_queue == NULL || sleep_timer == NULL) {
-        ESP_LOGE(TAG, "Kritik Hata: RTOS Objeleri Yaratılamadı!");
-        return;
-    }
-
+    // xTaskCreatePinnedToCore(ESPNOW_Task... ) silindi, çünkü artık direkt sender task okuyor.
     xTaskCreatePinnedToCore(Logic_Task, "Logic_Task", 8192, NULL, 4, NULL, OTHER_TASK_CORE);
-    xTaskCreatePinnedToCore(ESPNOW_Task, "ESPNOW_Task", 4096, NULL, 3, NULL, OTHER_TASK_CORE);
-
+    
     extern void LED_UI_Task(void *pvParameters);
     xTaskCreatePinnedToCore(LED_UI_Task, "LED_Task", 2048, NULL, 2, NULL, OTHER_TASK_CORE);
 
     if (g29_init(on_g29_state_changed, on_g29_input_received) == ESP_OK) {
-        ESP_LOGI(TAG, "USB Sürücüsü Başarıyla Kuruldu. USB Bekleniyor...");
-    } else {
-        ESP_LOGE(TAG, "USB Sürücüsü Başlatılamadı!");
+        ESP_LOGI(TAG, "USB Surucusu Basariyla Kuruldu. USB Bekleniyor...");
     }
 }
