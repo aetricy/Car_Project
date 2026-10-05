@@ -155,6 +155,7 @@ void Logic_Task(void *pvParameters) {
                     }
                 }
                 
+
                 // --- 2. SÜREKLİ SÜRÜŞ PAKETİ GÖNDERME ---
                 espnow_tx_item_t tx_item;
                 memset(&tx_item, 0, sizeof(espnow_tx_item_t)); // Çöpleri temizle (0x00)
@@ -207,7 +208,7 @@ void Logic_Task(void *pvParameters) {
                     current_system_state = STATE_SYS_ACTIVE;
                 }
                 break;
-
+            
             case STATE_USB_DISCONNECTED:
                 ESP_LOGE(TAG, "USB KOPTU! Acil Failsafe Tetikleniyor...");
                 

@@ -5,6 +5,7 @@
 #include <stdbool.h>
 
 #include "g29_config.h"
+#include "g29_button_map.h"
 
 // ESP-NOW ile C3'e doğrudan yollanacak normalize edilmiş veri paketi
 

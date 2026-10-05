@@ -1,7 +1,7 @@
 #ifndef CONFIG_HOST_H
 #define CONFIG_HOST_H
 
-#define LOG_WHEELSTATE 1
+#define LOG_WHEELSTATE 0
 
 #define USB_TASK_CORE 0
 #define OTHER_TASK_CORE 1
@@ -19,6 +19,7 @@ typedef enum {
     STATE_SYS_ACTIVE,
     STATE_USB_DISCONNECTED,
     STATE_SLEEP,
+    STATE_DEV_MODE
     
 } s3_logic_state_t;
 

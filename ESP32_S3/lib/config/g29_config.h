@@ -51,24 +51,21 @@ typedef struct __attribute__((packed)) {
 // 3. S3 -> C3 AYAR (CONFIG) PAKETİ (Sadece değişince gider)
 // ==========================================
 typedef struct __attribute__((packed)) {
-    uint8_t  packet_type;     // PKT_TYPE_CONFIG (0x03)
+    uint8_t  packet_type;     
     
-    // General Ayarlar
-    uint8_t  st_gyro_gain; // -100 100
+    int8_t   st_gyro_gain;    // -100 to 100 
 
-    // Direksiyon (Steering) Ayarları
-    int8_t   st_sub_trim;     // Merkez kaydırma (-100 to 100)
-    uint8_t  st_epa_left;     // Sol End Point (0-100%)
-    uint8_t  st_epa_right;    // Sağ End Point (0-100%)
-    bool     st_reverse;      // Ters yön (true/false)
-    uint8_t  st_curve;        // Eğri tipi (0: Lineer, 1: Expo vb.)
+    int8_t   st_sub_trim;     // -100 to 100
+    uint8_t  st_epa_left;     // 0-100%
+    uint8_t  st_epa_right;    // 0-100%
+    bool     st_reverse;      // true/false
+    uint8_t  st_curve;        // 0: Lineer, 1: Expo
     
-    // Gaz (Throttle) Ayarları
-    int8_t   th_sub_trim;     // Merkez kaydırma (-100 to 100)
-    uint8_t  th_epa_forward;  // İleri End Point (0-100%)
-    uint8_t  th_epa_backward; // Geri End Point (0-100%)
-    bool     th_reverse;      // Ters yön (true/false)
-    uint8_t  th_curve;        // Eğri tipi (0: Lineer, 1: Expo vb.)
+    int8_t   th_sub_trim;     // -100 to 100
+    uint8_t  th_epa_forward;  // 0-100%
+    uint8_t  th_epa_backward; // 0-100%
+    bool     th_reverse;      // true/false
+    uint8_t  th_curve;        // 0: Lineer, 1: Expo
 } car_config_packet_t;
 
 // ==========================================
@@ -79,7 +76,7 @@ typedef struct {
     float throttle;          // 0.0 ile 1.0
     float brake;             // 0.0 ile 1.0
     float clutch;            // 0.0 ile 1.0
-    uint16_t buttons_state;  // Tüm butonlar (LED, Ekran ve UI için S3 içinde kalır)
+    uint32_t buttons_state;  // Tüm butonlar (LED, Ekran ve UI için S3 içinde kalır)
 } g29_telemetry_t;
 
 // --- GÖNDERİCİ TX KAPSAYICI (UNION) ---
