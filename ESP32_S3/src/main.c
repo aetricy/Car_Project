@@ -13,7 +13,8 @@
 #include "g29_processor.h"
 #include "esp_now_sender.h"
 
-#include "led_ui_on_s3.h"
+#include "s3_status_led.h"
+
 #include "led_ui_on_g29.h"
 
 static const char *TAG = "MAIN_APP";
@@ -220,6 +221,8 @@ void Logic_Task(void *pvParameters) {
                 xQueueSend(espnow_tx_queue, &fail_item, 0);
                 xQueueReset(g29_input_queue);
 
+                xTimerStop(sleep_timer, 0);
+
                 car_needs_wakeup = true;
                 current_system_state = STATE_USB_WAITING;
                 break;
@@ -232,6 +235,8 @@ void Logic_Task(void *pvParameters) {
 }
 void app_main(void) {
     ESP_LOGI(TAG, "Sistem Baslatiliyor...");
+    init_s3_status_led();
+
     System_Events = xEventGroupCreate();
     g29_input_queue = xQueueCreate(10, sizeof(g29_telemetry_t));
     ui_data_mutex = xSemaphoreCreateMutex();
@@ -245,8 +250,6 @@ void app_main(void) {
     // xTaskCreatePinnedToCore(ESPNOW_Task... ) silindi, çünkü artık direkt sender task okuyor.
     xTaskCreatePinnedToCore(Logic_Task, "Logic_Task", 8192, NULL, 4, NULL, OTHER_TASK_CORE);
     
-    extern void LED_UI_Task(void *pvParameters);
-    xTaskCreatePinnedToCore(LED_UI_Task, "LED_Task", 2048, NULL, 2, NULL, OTHER_TASK_CORE);
 
     if (g29_init(on_g29_state_changed, on_g29_input_received) == ESP_OK) {
         ESP_LOGI(TAG, "USB Surucusu Basariyla Kuruldu. USB Bekleniyor...");

@@ -20,7 +20,6 @@ uint8_t target_car_mac[6];
 
 extern QueueHandle_t espnow_tx_queue;
 
-static SemaphoreHandle_t tx_mutex = NULL;
 static TaskHandle_t espnow_tx_task_handle = NULL;
 
 // ESP-NOW Gönderici Task (Doğrudan Kuyruktan Okur)
