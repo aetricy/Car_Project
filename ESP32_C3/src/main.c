@@ -6,6 +6,7 @@
 #include "g29_config.h"
 #include "esp_now_receive.h"
 #include "pwm_control.h"
+#include "led_indicator.h"
 
 #define LOG_MODE 1
 
@@ -26,6 +27,8 @@ void app_main(void) {
     init_default_config();
     init_pwm();
     init_esp_now_receiver();
+    
+    init_led_indicator();
     
     car_drive_packet_t   current_telemetry;
     car_command_packet_t current_command;
