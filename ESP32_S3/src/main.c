@@ -1,5 +1,6 @@
 #include <stdio.h>
 #include <string.h>
+#include <math.h>
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
 #include "freertos/queue.h"
@@ -35,6 +36,34 @@ static uint8_t global_packet_counter = 0;
 // ==========================================
 // HELPER FUNCTIONS
 // ==========================================
+
+// Evaluates deliberate driver interaction vs. idle sensor/potentiometer/motor noise
+static bool has_user_activity(const g29_telemetry_t *current, const g29_telemetry_t *baseline, float steer_thresh, float pedal_thresh) {
+    if (current == NULL) return false;
+
+    // 1. Any button pressed
+    if (current->buttons_state != 0) {
+        return true;
+    }
+
+    // 2. Any pedal actively pressed above resting deadzone
+    if (current->throttle > pedal_thresh || current->brake > pedal_thresh || current->clutch > pedal_thresh) {
+        return true;
+    }
+
+    // 3. Significant delta compared to resting baseline
+    if (baseline != NULL) {
+        if (fabsf(current->steering - baseline->steering) > steer_thresh) {
+            return true;
+        }
+        if (fabsf(current->throttle - baseline->throttle) > pedal_thresh ||
+            fabsf(current->brake - baseline->brake) > pedal_thresh) {
+            return true;
+        }
+    }
+
+    return false;
+}
 
 void sleep_timer_callback(TimerHandle_t xTimer) {
     ESP_LOGW(TAG, "30 seconds inactivity! Entering sleep mode...");
@@ -82,6 +111,10 @@ void on_g29_state_changed(g29_state_t state) {
 void Logic_Task(void *pvParameters) {
     g29_telemetry_t incoming_telemetry;
     static g29_telemetry_t last_telemetry = {0};
+    static g29_telemetry_t active_baseline = {0};
+    static g29_telemetry_t sleep_baseline = {0};
+    static bool active_baseline_init = false;
+    static bool sleep_baseline_ready = false;
     
     current_system_state = STATE_USB_WAITING; 
     bool sleep_command_sent = false;
@@ -153,14 +186,25 @@ void Logic_Task(void *pvParameters) {
                 }
 
                 sleep_command_sent = false;
-                bool new_data = false;
+                sleep_baseline_ready = false;
+                bool user_acted = false;
 
                 while (xQueueReceive(g29_input_queue, &incoming_telemetry, 0) == pdTRUE) {
                     last_telemetry = incoming_telemetry;
-                    new_data = true;
+
+                    if (!active_baseline_init) {
+                        active_baseline = incoming_telemetry;
+                        active_baseline_init = true;
+                    }
+
+                    // Reset inactivity timer only if real deliberate user action occurred
+                    if (has_user_activity(&incoming_telemetry, &active_baseline, 0.03f, 0.05f)) {
+                        user_acted = true;
+                        active_baseline = incoming_telemetry;
+                    }
                 }
 
-                if (new_data) {
+                if (user_acted) {
                     xTimerReset(sleep_timer, 0); 
                 }
 
@@ -222,24 +266,48 @@ void Logic_Task(void *pvParameters) {
                     simulated_ffb_set_enabled(false); // Free motors (energy saving)
                     g29_led_ui_clear();
                     g29_led_ui_reset_throttle_cache();
-                    ESP_LOGW(TAG, "Sent SLEEP command to car.");
+                    ESP_LOGW(TAG, "Sent SLEEP command to car. Settling motors...");
+
+                    // Allow mechanical vibration / motor relaxation to settle (300ms)
+                    vTaskDelay(pdMS_TO_TICKS(300));
+
+                    // Flush any vibration/transient packets generated during shutdown
+                    xQueueReset(g29_input_queue);
+
+                    // Take fresh snapshot of settled rest position as sleep baseline
+                    sleep_baseline = last_telemetry;
+                    sleep_baseline_ready = true;
                 }
 
-                if (xQueueReceive(g29_input_queue, &incoming_telemetry, pdMS_TO_TICKS(100)) == pdTRUE) {
-                    ESP_LOGI(TAG, "Sent WAKE-UP command to car.");
-                    
-                    espnow_tx_item_t wake_item;
-                    memset(&wake_item, 0, sizeof(espnow_tx_item_t));
-                    wake_item.length = sizeof(car_command_packet_t);
-                    wake_item.payload.command.packet_type = PKT_TYPE_COMMAND;
-                    wake_item.payload.command.command_id  = CMD_WAKE_UP;
-                    wake_item.payload.command.parameter   = 0;
+                // Check for intentional user interaction (rejecting noise & vibration)
+                while (xQueueReceive(g29_input_queue, &incoming_telemetry, 0) == pdTRUE) {
+                    last_telemetry = incoming_telemetry;
 
-                    xQueueSend(espnow_tx_queue, &wake_item, 0);
-                    simulated_ffb_init(); // Re-initialize FFB with parked profile
-                    g29_led_ui_reset_throttle_cache();
-                    current_system_state = STATE_SYS_ACTIVE;
+                    // Require genuine deliberate input: >0.06f steering change (~32 deg), or pedal/button press
+                    if (sleep_baseline_ready && has_user_activity(&incoming_telemetry, &sleep_baseline, 0.06f, 0.08f)) {
+                        ESP_LOGI(TAG, "Deliberate user input detected! Waking up system and car...");
+                        
+                        espnow_tx_item_t wake_item;
+                        memset(&wake_item, 0, sizeof(espnow_tx_item_t));
+                        wake_item.length = sizeof(car_command_packet_t);
+                        wake_item.payload.command.packet_type = PKT_TYPE_COMMAND;
+                        wake_item.payload.command.command_id  = CMD_WAKE_UP;
+                        wake_item.payload.command.parameter   = 0;
+
+                        xQueueSend(espnow_tx_queue, &wake_item, 0);
+                        simulated_ffb_init(); // Re-initialize FFB with parked profile
+                        g29_led_ui_reset_throttle_cache();
+                        
+                        active_baseline = incoming_telemetry;
+                        active_baseline_init = true;
+                        xTimerReset(sleep_timer, 0);
+                        sleep_baseline_ready = false;
+                        current_system_state = STATE_SYS_ACTIVE;
+                        break;
+                    }
                 }
+                
+                vTaskDelay(pdMS_TO_TICKS(50));
                 break;
             
             case STATE_USB_DISCONNECTED:
@@ -260,6 +328,8 @@ void Logic_Task(void *pvParameters) {
 
                 xTimerStop(sleep_timer, 0);
 
+                active_baseline_init = false;
+                sleep_baseline_ready = false;
                 car_needs_wakeup = true;
                 current_system_state = STATE_USB_WAITING;
                 break;
