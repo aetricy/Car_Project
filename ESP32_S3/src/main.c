@@ -14,8 +14,8 @@
 #include "esp_now_sender.h"
 
 #include "s3_status_led.h"
-
 #include "led_ui_on_g29.h"
+#include "config_control.h"
 
 static const char *TAG = "MAIN_APP";
 
@@ -54,7 +54,7 @@ void sleep_timer_callback(TimerHandle_t xTimer) {
 // 1. G29 GİRDİ (INPUT) CALLBACK
 // -------------------------------------------------------------
 void on_g29_input_received(const uint8_t *data, int len) {
-    if(g29_is_ready() && (current_system_state == STATE_SYS_ACTIVE || current_system_state == STATE_SLEEP)){
+    if(g29_is_ready() && (current_system_state == STATE_SYS_ACTIVE || current_system_state == STATE_DEV_MODE || current_system_state == STATE_SLEEP)){
         
         g29_telemetry_t temp_telemetry;
         g29_process_raw_data(data, len, &temp_telemetry);
@@ -74,7 +74,7 @@ void on_g29_input_received(const uint8_t *data, int len) {
 void on_g29_state_changed(g29_state_t state) {
     switch (state) {
         case G29_STATE_DISCONNECTED:
-            if (current_system_state == STATE_SYS_ACTIVE) {
+            if (current_system_state == STATE_SYS_ACTIVE || current_system_state == STATE_DEV_MODE) {
                 current_system_state = STATE_USB_DISCONNECTED;
             }
             break;
@@ -118,11 +118,20 @@ void Logic_Task(void *pvParameters) {
                 break;
 
             case STATE_SYS_ACTIVE:
+            case STATE_DEV_MODE:
                 // SİSTEM İLK AKTİF OLDUĞUNDA ESP-NOW'U BAŞLAT
                 if (!esp_now_started) {
                     ESP_LOGI(TAG, "G29 Aktif Oldu! ESP-NOW Kuruluyor...");
                     init_esp_now_sender();
                     esp_now_started = true;
+
+                    // Başlangıçta güncel ayar paketini C3'e fırlat
+                    espnow_tx_item_t init_cfg_item;
+                    memset(&init_cfg_item, 0, sizeof(espnow_tx_item_t));
+                    init_cfg_item.length = sizeof(car_config_packet_t);
+                    init_cfg_item.payload.config = *config_control_get_active_config();
+                    xQueueSend(espnow_tx_queue, &init_cfg_item, 0);
+                    ESP_LOGI(TAG, "Baslangic Config Paketi Araca Gonderildi.");
                 }
 
                 if (car_needs_wakeup) {
@@ -137,7 +146,6 @@ void Logic_Task(void *pvParameters) {
                     car_needs_wakeup = false; // Uyandırdık, bayrağı indir
                     ESP_LOGI(TAG, "Araca WAKE_UP (Failsafe/Uyku Cikisi) Komutu Gonderildi.");
                 }
-
 
                 sleep_command_sent = false;
                 bool new_data = false;
@@ -154,7 +162,18 @@ void Logic_Task(void *pvParameters) {
                         xSemaphoreGive(ui_data_mutex);
                     }
                 }
-                
+
+                // --- 1. DEV MODE VE AYAR İŞLEME (G29 BUTONLARI & LED UI) ---
+                car_config_packet_t updated_config;
+                if (config_control_process(&last_telemetry, &updated_config)) {
+                    espnow_tx_item_t cfg_item;
+                    memset(&cfg_item, 0, sizeof(espnow_tx_item_t));
+                    cfg_item.length = sizeof(car_config_packet_t);
+                    cfg_item.payload.config = updated_config;
+                    if (xQueueSend(espnow_tx_queue, &cfg_item, 0) == pdTRUE) {
+                        ESP_LOGI(TAG, "Guncel Config Paketi ESP-NOW Kuyruguna Eklendi (Boyut: %d)", cfg_item.length);
+                    }
+                }
 
                 // --- 2. SÜREKLİ SÜRÜŞ PAKETİ GÖNDERME ---
                 espnow_tx_item_t tx_item;
@@ -247,6 +266,8 @@ void app_main(void) {
     espnow_tx_queue = xQueueCreate(10, sizeof(espnow_tx_item_t)); 
     
     sleep_timer = xTimerCreate("Sleep_Timer", pdMS_TO_TICKS(INACTIVITY_TIMEOUT_US / 1000), pdFALSE, (void *)0, sleep_timer_callback);
+
+    config_control_init();
 
     // xTaskCreatePinnedToCore(ESPNOW_Task... ) silindi, çünkü artık direkt sender task okuyor.
     xTaskCreatePinnedToCore(Logic_Task, "Logic_Task", 8192, NULL, 4, NULL, OTHER_TASK_CORE);

@@ -52,6 +52,10 @@ static void s3_led_blink_task(void *pvParameters) {
                 case STATE_SLEEP:
                     set_led_raw(10, 0, 15); // SABİT MOR
                     break;
+
+                case STATE_DEV_MODE:
+                    set_led_raw(0, 15, 15); // SABİT TURKUAZ / CYAN (Dev Mod)
+                    break;
                     
                 default:
                     set_led_raw(0, 0, 0);   // KAPALI

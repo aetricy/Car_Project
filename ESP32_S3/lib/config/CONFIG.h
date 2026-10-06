@@ -6,7 +6,7 @@
 #define USB_TASK_CORE 0
 #define OTHER_TASK_CORE 1
 
-#define INACTIVITY_TIMEOUT_us  10000000     // 30 saniye
+#define INACTIVITY_TIMEOUT_us  30000000     // 30 saniye
 
 
 #define ACTIVE_CAR_ID                       0 // Cihaz ID

@@ -72,7 +72,8 @@ void app_main(void) {
         // ==========================================
         if (esp_now_get_config_data(&current_config)) {
             last_packet_time = xTaskGetTickCount(); // Sinyal geldi, zamanlayıcıyı sıfırla
-            printf("[SİSTEM] YENI AYARLAR ALINDI!\n");
+            update_pwm_config(&current_config);     // Ayarları anında PWM motor/servo sistemine uygula
+            printf("[SİSTEM] YENI AYARLAR ALINDI VE UYGULANDI!\n");
         }
 
         // ==========================================

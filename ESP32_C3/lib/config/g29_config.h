@@ -54,7 +54,7 @@ typedef struct __attribute__((packed)) {
     uint8_t  packet_type;     // PKT_TYPE_CONFIG (0x03)
     
     // General Ayarlar
-    uint8_t  st_gyro_gain; // -100 100
+    int8_t   st_gyro_gain;    // -100 to 100 
 
     // Direksiyon (Steering) Ayarları
     int8_t   st_sub_trim;     // Merkez kaydırma (-100 to 100)
