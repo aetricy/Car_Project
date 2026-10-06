@@ -7,7 +7,7 @@
 #include <string.h>
 #include <math.h>
 
-// --- LOGLAMA MAKROSU ---
+// --- LOGGING MACRO ---
 #define DEBUG_LOG_ENABLE 1  
 #if DEBUG_LOG_ENABLE
     #define RC_PRINT(fmt, ...) printf(fmt, ##__VA_ARGS__)
@@ -15,39 +15,39 @@
     #define RC_PRINT(fmt, ...) 
 #endif
 
-// PWM Pin Tanımları
+// PWM Pin Definitions
 #define STEERING_PWM_PIN 3
 #define THROTTLE_PWM_PIN 1
 
-// NVS İsim Alanı ve Anahtarı
+// NVS Namespace and Key
 #define NVS_NAMESPACE_CAR_CFG "car_cfg_ns"
 #define NVS_KEY_CAR_CFG       "cfg_blob"
 
-// RAM Üzerindeki Aktif Ayarlar
+// Active Configuration Cached in RAM
 static car_config_packet_t current_config;
 
-// RC Expo / Eğri Hesaplama Fonksiyonu
-// normalized_input: 0.0 (Merkez) ile 1.0 (Tam Açı) arası
+// RC Expo / Curve Calculation Function
+// normalized_input: 0.0 (Center) to 1.0 (Full throw)
 static float apply_expo(float normalized_input, uint8_t curve_type) {
     if (normalized_input < 0.0f) normalized_input = 0.0f;
     if (normalized_input > 1.0f) normalized_input = 1.0f;
 
     switch (curve_type) {
         case 0:
-            // Lineer: Birebir doğrusal tepki
+            // Linear: 1:1 direct response
             return normalized_input;
         case 1:
-            // Expo Yumuşak: Merkezde daha hassas ve yumuşak, uçlarda tam açı (Drift ve hassas kontrol için ideal)
+            // Expo Soft: Softer near center, progressive towards extremes (ideal for drift control)
             return 0.45f * normalized_input + 0.55f * (normalized_input * normalized_input * normalized_input);
         case 2:
-            // Expo Agresif: Merkezde çok yumuşak, son çeyrekte çok hızlı açılma
+            // Expo Aggressive: Very soft near center, ramps up quickly in outer throw
             return 0.20f * normalized_input + 0.80f * (normalized_input * normalized_input * normalized_input);
         default:
             return normalized_input;
     }
 }
 
-// Ayar Doğrulama (Flash'tan bozuk/unformatted veri okunursa güvenlik kontrolü)
+// Configuration validation (guard against corrupted flash or unformatted NVS)
 static bool is_config_valid(const car_config_packet_t *cfg) {
     if (!cfg) return false;
     if (cfg->st_epa_left < 20 || cfg->st_epa_left > 100) return false;
@@ -70,17 +70,17 @@ void init_default_config(void) {
     current_config.st_epa_right   = 100;
     current_config.st_sub_trim    = 0;
     current_config.st_reverse     = false;
-    current_config.st_curve       = 0; // Lineer
+    current_config.st_curve       = 0; // Linear
     
     current_config.th_epa_forward = 100;
     current_config.th_epa_backward = 100;
     current_config.th_sub_trim    = 0;
     current_config.th_reverse     = false;
-    current_config.th_curve       = 0; // Lineer
+    current_config.th_curve       = 0; // Linear
     
-    current_config.st_gyro_gain   = 50; // Varsayılan %50 Gyro Gain
+    current_config.st_gyro_gain   = 50; // Default 50% Gyro Gain
 
-    RC_PRINT("[INFO] Varsayilan RC ayarlari RAM'e yuklendi.\n");
+    RC_PRINT("[INFO] Default RC configuration loaded into RAM.\n");
 }
 
 bool load_config_from_nvs(car_config_packet_t *out_config) {
@@ -111,19 +111,19 @@ bool save_config_to_nvs(const car_config_packet_t *new_config) {
     nvs_handle_t handle;
     esp_err_t err = nvs_open(NVS_NAMESPACE_CAR_CFG, NVS_READWRITE, &handle);
     if (err != ESP_OK) {
-        RC_PRINT("[NVS HATA] NVS acilamadi: %s\n", esp_err_to_name(err));
+        RC_PRINT("[NVS ERROR] Failed to open NVS: %s\n", esp_err_to_name(err));
         return false;
     }
 
-    // Flash yipranmasini onlemek icin: Mevcut kayitli veriyi oku ve karsilastir
+    // Flash wear leveling: Read existing data and compare before writing
     car_config_packet_t existing_cfg;
     size_t req_len = sizeof(car_config_packet_t);
     err = nvs_get_blob(handle, NVS_KEY_CAR_CFG, &existing_cfg, &req_len);
     if (err == ESP_OK && req_len == sizeof(car_config_packet_t)) {
         if (memcmp(&existing_cfg, new_config, sizeof(car_config_packet_t)) == 0) {
-            // Veriler birebir ayni, flash yazimi yapilmaz (Wear leveling ve omur koruma)
+            // Data identical, skip flash write (wear leveling protection)
             nvs_close(handle);
-            RC_PRINT("[NVS] Veriler mevcut NVS ile ayni, flash yazimi atlandi (Omur korundu).\n");
+            RC_PRINT("[NVS] Data matches existing NVS blob, flash write skipped (wear preserved).\n");
             return true;
         }
     }
@@ -132,12 +132,12 @@ bool save_config_to_nvs(const car_config_packet_t *new_config) {
     if (err == ESP_OK) {
         err = nvs_commit(handle);
         if (err == ESP_OK) {
-            RC_PRINT("[NVS] RC Ayarlari basariyla Flash NVS'e yazildi ve onaylandi (commit)!\n");
+            RC_PRINT("[NVS] RC configuration written to Flash NVS and committed successfully!\n");
         } else {
-            RC_PRINT("[NVS HATA] Commit basarisiz: %s\n", esp_err_to_name(err));
+            RC_PRINT("[NVS ERROR] Commit failed: %s\n", esp_err_to_name(err));
         }
     } else {
-        RC_PRINT("[NVS HATA] Set blob basarisiz: %s\n", esp_err_to_name(err));
+        RC_PRINT("[NVS ERROR] Set blob failed: %s\n", esp_err_to_name(err));
     }
 
     nvs_close(handle);
@@ -152,13 +152,13 @@ void init_config_with_nvs(void) {
     }
 
     if (load_config_from_nvs(&current_config)) {
-        RC_PRINT("[NVS] Kaydedilmis arac ayarlari NVS'ten basariyla yuklendi! (EPA_L: %d%%, EPA_R: %d%%, Gyro: %d%%, Trim: %d)\n",
+        RC_PRINT("[NVS] Stored vehicle configuration loaded from NVS! (EPA_L: %d%%, EPA_R: %d%%, Gyro: %d%%, Trim: %d)\n",
                  current_config.st_epa_left, current_config.st_epa_right, current_config.st_gyro_gain, current_config.st_sub_trim);
-        // Gyro gain PWM pinini yuklenen degere gore baslat
+        // Initialize Gyro gain PWM output from loaded config
         uint16_t gyro_us = 1000 + ((uint16_t)current_config.st_gyro_gain * 10);
         set_gyro_gain_us(gyro_us);
     } else {
-        RC_PRINT("[NVS] Gecerli ayar bulunamadi, varsayilan ayarlar uygulaniyor ve NVS'e kaydediliyor.\n");
+        RC_PRINT("[NVS] Valid configuration not found, applying defaults and writing to NVS.\n");
         init_default_config();
         save_config_to_nvs(&current_config);
         set_gyro_gain_us(1500);
@@ -172,7 +172,7 @@ const car_config_packet_t* get_current_config(void) {
 void update_pwm_config(const car_config_packet_t *new_config) {
     memcpy(&current_config, new_config, sizeof(car_config_packet_t));
 
-    // Gyro Gain Dönüşümü (0% - 100% -> 1000us - 2000us)
+    // Gyro Gain conversion (0% - 100% -> 1000us - 2000us)
     uint16_t gyro_us = 1500;
     if (current_config.st_gyro_gain >= 0) {
         gyro_us = 1000 + ((uint16_t)current_config.st_gyro_gain * 10);
@@ -183,11 +183,11 @@ void update_pwm_config(const car_config_packet_t *new_config) {
     if (gyro_us > 2000) gyro_us = 2000;
     set_gyro_gain_us(gyro_us);
 
-    RC_PRINT("\n================== YENI CONFIG ISLENDI ==================\n");
-    RC_PRINT(" Direksiyon -> EPA Sol: %d%% | Sag: %d%% | Curve: %d | Trim: %d (x3) | Rev: %d\n",
+    RC_PRINT("\n================== NEW CONFIG APPLIED ==================\n");
+    RC_PRINT(" Steering -> EPA Left: %d%% | Right: %d%% | Curve: %d | Trim: %d (x3) | Rev: %d\n",
              current_config.st_epa_left, current_config.st_epa_right, current_config.st_curve,
              current_config.st_sub_trim, current_config.st_reverse);
-    RC_PRINT(" Gaz/Fren   -> EPA Ileri: %d%% | Geri: %d%% | Curve: %d | Trim: %d (x3) | Rev: %d\n",
+    RC_PRINT(" Throttle -> EPA Fwd: %d%% | Rev: %d%% | Curve: %d | Trim: %d (x3) | Rev: %d\n",
              current_config.th_epa_forward, current_config.th_epa_backward, current_config.th_curve,
              current_config.th_sub_trim, current_config.th_reverse);
     RC_PRINT(" Gyro Gain  -> Gain: %d%% | PWM (GPIO%d): %d us\n",
@@ -197,43 +197,43 @@ void update_pwm_config(const car_config_packet_t *new_config) {
 
 uint16_t apply_config_to_pwm(uint16_t raw_pwm, bool is_steering) {
     if (is_steering) {
-        // 1. Sürücü Girdisi (Direksiyon Yönü: Sol < 1500, Sağ > 1500)
-        // raw_pwm: 1000 (Tam Sol) ... 1500 (Merkez) ... 2000 (Tam Sağ)
+        // 1. Driver Input (Steering Direction: Left < 1500, Right > 1500)
+        // raw_pwm: 1000 (Full Left) ... 1500 (Center) ... 2000 (Full Right)
         float diff = (float)((int16_t)raw_pwm - 1500);
         float norm = diff / 500.0f;
         if (norm > 1.0f) norm = 1.0f;
         if (norm < -1.0f) norm = -1.0f;
         
-        // Büyüklük (0.0 - 1.0) ve eğri (Curve / Expo) uygulaması
+        // Magnitude (0.0 - 1.0) and Curve / Expo application
         float mag = fabsf(norm);
         float curved_mag = apply_expo(mag, current_config.st_curve);
         
-        // 2. EPA Faktörü:
-        // Reverse aktifken G29 sol girişi aracı SAĞA, G29 sağ girişi aracı SOLA döndürür.
-        // Dolayısıyla arabanın fiziksel sol ve sağ dönüş limitleri reverse durumuna göre doğru kanala atanır:
+        // 2. EPA Scaling:
+        // When reverse is enabled, G29 left input turns car RIGHT, and G29 right turns car LEFT.
+        // Therefore physical limits must be mapped to the corresponding direction:
         float factor;
         if (current_config.st_reverse) {
-            // Reverse Açıkken: G29 Sol -> Sağ limit (st_epa_right), G29 Sağ -> Sol limit (st_epa_left)
+            // Reverse Enabled: G29 Left -> Right limit (st_epa_right), G29 Right -> Left limit (st_epa_left)
             factor = (norm < 0.0f) ? (current_config.st_epa_right / 100.0f)
                                    : (current_config.st_epa_left / 100.0f);
         } else {
-            // Reverse Kapalıyken: G29 Sol -> Sol limit (st_epa_left), G29 Sağ -> Sağ limit (st_epa_right)
+            // Reverse Disabled: G29 Left -> Left limit (st_epa_left), G29 Right -> Right limit (st_epa_right)
             factor = (norm < 0.0f) ? (current_config.st_epa_left / 100.0f)
                                    : (current_config.st_epa_right / 100.0f);
         }
         
         float deflection = curved_mag * 500.0f * factor;
         
-        // 3. Çıkış Yönü (Sol: -1, Sağ: +1)
+        // 3. Output Direction (Left: -1, Right: +1)
         int16_t dir = (norm < 0.0f) ? -1 : 1;
         int16_t output_offset = (int16_t)(deflection * dir);
         
-        // 4. Reverse (Ters Yön) Uygulaması:
+        // 4. Invert Output if Reversed:
         if (current_config.st_reverse) {
             output_offset = -output_offset;
         }
         
-        // 5. Sub-Trim Uygulaması (Hissiyatı ve hassasiyeti artırmak için 3x çarpan)
+        // 5. Apply Sub-Trim (3x multiplier for enhanced range and resolution)
         int16_t trim = (int16_t)current_config.st_sub_trim * 3;
         if (current_config.st_reverse) {
             trim = -trim;
@@ -243,8 +243,8 @@ uint16_t apply_config_to_pwm(uint16_t raw_pwm, bool is_steering) {
         if (final_pwm < 1000) final_pwm = 1000;
         if (final_pwm > 2000) final_pwm = 2000;
         return (uint16_t)final_pwm;
-    } else { // Gaz & Fren (Throttle)
-        // 1. Sürücü Girdisi (Fren/Geri < 1500, İleri Gaz > 1500)
+    } else { // Throttle & Brake
+        // 1. Driver Input (Brake/Reverse < 1500, Forward Throttle > 1500)
         float diff = (float)((int16_t)raw_pwm - 1500);
         float norm = diff / 500.0f;
         if (norm > 1.0f) norm = 1.0f;
@@ -253,7 +253,7 @@ uint16_t apply_config_to_pwm(uint16_t raw_pwm, bool is_steering) {
         float mag = fabsf(norm);
         float curved_mag = apply_expo(mag, current_config.th_curve);
         
-        // 2. EPA Faktörü:
+        // 2. EPA Scaling:
         float factor;
         if (current_config.th_reverse) {
             factor = (norm < 0.0f) ? (current_config.th_epa_forward / 100.0f)
@@ -265,16 +265,16 @@ uint16_t apply_config_to_pwm(uint16_t raw_pwm, bool is_steering) {
         
         float deflection = curved_mag * 500.0f * factor;
         
-        // 3. Çıkış Yönü
+        // 3. Output Direction
         int16_t dir = (norm < 0.0f) ? -1 : 1;
         int16_t output_offset = (int16_t)(deflection * dir);
         
-        // 4. Reverse Uygulaması
+        // 4. Invert Output if Reversed
         if (current_config.th_reverse) {
             output_offset = -output_offset;
         }
         
-        // 5. Sub-Trim Uygulaması (Hissiyatı ve hassasiyeti artırmak için 3x çarpan)
+        // 5. Apply Sub-Trim (3x multiplier for enhanced range and resolution)
         int16_t trim = (int16_t)current_config.th_sub_trim * 3;
         if (current_config.th_reverse) {
             trim = -trim;
@@ -288,7 +288,7 @@ uint16_t apply_config_to_pwm(uint16_t raw_pwm, bool is_steering) {
 }
 
 // ==========================================
-// DONANIM (PWM) FONKSİYONLARI
+// HARDWARE (PWM) FUNCTIONS
 // ==========================================
 void init_pwm(void) {
     ledc_timer_config_t ledc_timer = {
@@ -306,7 +306,7 @@ void init_pwm(void) {
         .timer_sel      = LEDC_TIMER_0,
         .intr_type      = LEDC_INTR_DISABLE,
         .gpio_num       = STEERING_PWM_PIN,
-        .duty           = 8110, // 330Hz'de 1500us (Merkez)
+        .duty           = 8110, // 1500us at 330Hz (Center)
         .hpoint         = 0
     };
     ESP_ERROR_CHECK(ledc_channel_config(&ledc_channel_steering));
@@ -317,7 +317,7 @@ void init_pwm(void) {
         .timer_sel      = LEDC_TIMER_0,
         .intr_type      = LEDC_INTR_DISABLE,
         .gpio_num       = THROTTLE_PWM_PIN,
-        .duty           = 8110, // Merkez
+        .duty           = 8110, // Center
         .hpoint         = 0
     };
     ESP_ERROR_CHECK(ledc_channel_config(&ledc_channel_throttle));
@@ -328,12 +328,12 @@ void init_pwm(void) {
         .timer_sel      = LEDC_TIMER_0,
         .intr_type      = LEDC_INTR_DISABLE,
         .gpio_num       = GYRO_GAIN_PWM_PIN,
-        .duty           = 8110, // Varsayilan %50 Gain (1500us)
+        .duty           = 8110, // Default 50% Gain (1500us)
         .hpoint         = 0
     };
     ESP_ERROR_CHECK(ledc_channel_config(&ledc_channel_gyro));
 
-    RC_PRINT("-> [DONANIM] PWM Baslatildi (Steering: GPIO%d | Throttle: GPIO%d | Gyro Gain: GPIO%d)\n", 
+    RC_PRINT("-> [HARDWARE] PWM Initialized (Steering: GPIO%d | Throttle: GPIO%d | Gyro Gain: GPIO%d)\n", 
              STEERING_PWM_PIN, THROTTLE_PWM_PIN, GYRO_GAIN_PWM_PIN);
 }
 

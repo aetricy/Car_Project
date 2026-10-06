@@ -5,7 +5,7 @@
 #include <stdbool.h>
 #include "g29_config.h"
 
-// --- Ayar (Config) ve Matematik Fonksiyonları ---
+// --- Configuration and Mathematical Functions ---
 void init_default_config(void);
 void init_config_with_nvs(void);
 bool load_config_from_nvs(car_config_packet_t *out_config);
@@ -14,7 +14,7 @@ void update_pwm_config(const car_config_packet_t *new_config);
 const car_config_packet_t* get_current_config(void);
 uint16_t apply_config_to_pwm(uint16_t raw_pwm, bool is_steering);
 
-// --- Donanım (PWM) Fonksiyonları ---
+// --- Hardware (PWM) Functions ---
 #define STEERING_PWM_PIN    3
 #define THROTTLE_PWM_PIN    1
 #define GYRO_GAIN_PWM_PIN   0

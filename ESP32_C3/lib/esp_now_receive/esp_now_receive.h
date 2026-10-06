@@ -2,19 +2,17 @@
 #define ESP_NOW_RECEIVE_H
 
 #include <stdbool.h>
-#include "g29_config.h" // car_command_packet_t vb. structların olduğu dosya
-
-
+#include "g29_config.h" // Shared packet structures
 
 // ==========================================
-// FONKSİYON PROTOTİPLERİ
+// FUNCTION PROTOTYPES
 // ==========================================
 void init_esp_now_receiver(void);
 
-// Sürüş verisini çeken fonksiyon (Eski)
+// Retrieves drive telemetry data
 bool esp_now_get_latest_data(car_drive_packet_t *out_data);
 
-// Komut ve Ayar verilerini çeken YENİ fonksiyonlar
+// Retrieves command and configuration packet data
 bool esp_now_get_command_data(car_command_packet_t *out_data);
 bool esp_now_get_config_data(car_config_packet_t *out_data);
 

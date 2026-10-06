@@ -6,224 +6,224 @@
 [![Protocol](https://img.shields.io/badge/Wireless-ESP--NOW%20%2850Hz%20Low--Latency%29-orange.svg)](https://www.espressif.com/en/solutions/low-power-solutions/esp-now)
 [![Wheel](https://img.shields.io/badge/Hardware-Logitech%20G29%20Driving%20Force-purple.svg)](https://www.logitechg.com/)
 
-Bu proje; **Logitech G29** yarış direksiyonu ve pedal setini, harici bir bilgisayara ihtiyaç duymadan doğrudan **ESP32-S3 (USB Host)** üzerinden okuyup, ultra düşük gecikmeli **ESP-NOW** kablosuz protokolü ile RC araç üzerinde bulunan **ESP32-C3** alıcı ünitesine ileten gelişmiş bir uzaktan kontrol ve telemetri ekosistemidir.
+This project is an advanced, standalone remote control and telemetry ecosystem that interfaces a **Logitech G29** racing wheel and pedal set directly via an **ESP32-S3 (USB Host)**—without requiring a PC—and transmits low-latency control packets to an **ESP32-C3** receiver installed on an RC vehicle via **ESP-NOW** at 50 Hz.
 
-Sistem; dinamik simüle edilmiş **Force Feedback (FFB)**, gaz pedalı ile senkronize **G29 Devir (RPM) LED'leri**, direksiyon üzerinden menülü **Dev Mode (EPA, Trim, Gyro, Eğri Ayarları)**, **5 farklı araç profili yönetimi**, **NVS kalıcılığı (Flash korumalı)** ve çift taraflı **Failsafe / Otomatik Yeniden Bağlanma** özellikleriyle donatılmıştır.
-
----
-
-## 📌 İçindekiler
-- [Sistem Mimarisi](#-sistem-mimarisi)
-- [Öne Çıkan Özellikler](#-öne-çıkan-özellikler)
-- [Direksiyon Tuş ve Kontrol Haritası](#-direksiyon-tuş-ve-kontrol-haritası)
-- [Dev Mode (Direksiyon Üzeri Ayar Menüsü)](#-dev-mode-direksiyon-üzeri-ayar-menüsü)
-- [Simüle Force Feedback (FFB) Fiziği](#-simüle-force-feedback-ffb-fiziği)
-- [Donanım Bağlantıları ve Pin Şeması](#-donanım-bağlantıları-ve-pin-şeması)
-- [Konfigürasyon Parametreleri](#-konfigürasyon-parametreleri)
-- [Kurulum ve Yükleme (PlatformIO)](#-kurulum-ve-yükleme-platformio)
+The system features dynamic simulated **Force Feedback (FFB)**, throttle-synchronized **RPM LEDs**, an interactive on-wheel **Dev Mode (EPA, Trim, Gyro, and Curve tuning)**, support for **5 distinct vehicle profiles**, flash wear-protected **NVS persistence**, and bidirectional **Failsafe / Auto-Reconnection**.
 
 ---
 
-## 🏗️ Sistem Mimarisi
+## 📌 Table of Contents
+- [System Architecture](#-system-architecture)
+- [Key Features](#-key-features)
+- [Wheel Controls & Button Mapping](#-wheel-controls--button-mapping)
+- [Dev Mode (On-Wheel Configuration GUI)](#-dev-mode-on-wheel-configuration-gui)
+- [Simulated Force Feedback (FFB) Physics](#-simulated-force-feedback-ffb-physics)
+- [Hardware Wiring & Pinout](#-hardware-wiring--pinout)
+- [Configuration Reference](#-configuration-reference)
+- [Setup & Flashing (PlatformIO)](#-setup--flashing-platformio)
+
+---
+
+## 🏗️ System Architecture
 
 ```mermaid
 graph LR
-    subgraph Sürücü İstasyonu [VERİCİ / SÜRÜCÜ İSTASYONU]
-        G29[Logitech G29 Direksiyon & Pedallar] -- USB HID --> S3[ESP32-S3 USB Host]
-        S3 -- FFB & RPM LED --> G29
+    subgraph DriverStation [TRANSMITTER / DRIVER STATION]
+        G29[Logitech G29 Wheel & Pedals] -- USB HID --> S3[ESP32-S3 USB Host]
+        S3 -- FFB & RPM LEDs --> G29
     end
 
-    subgraph Kablosuz Bağlantı [KABLOSUZ İLETİŞİM]
-        S3 -- "ESP-NOW (2.4 GHz / 50 Hz)" --> C3[ESP32-C3 Alıcı]
+    subgraph WirelessLink [WIRELESS LINK]
+        S3 -- "ESP-NOW (2.4 GHz / 50 Hz)" --> C3[ESP32-C3 Receiver]
     end
 
-    subgraph RC Araç [RC ARAÇ KONTROL]
-        C3 -- "GPIO 3 (PWM)" --> Servo[Yön Servosu]
-        C3 -- "GPIO 1 (PWM)" --> ESC[Motor Sürücü / ESC]
+    subgraph RCVehicle [RC VEHICLE CONTROL]
+        C3 -- "GPIO 3 (PWM)" --> Servo[Steering Servo]
+        C3 -- "GPIO 1 (PWM)" --> ESC[Electronic Speed Controller]
         C3 -- "GPIO 0 (PWM)" --> Gyro[Drift Gyro Gain]
     end
 ```
 
 ---
 
-## ⚡ Öne Çıkan Özellikler
+## ⚡ Key Features
 
-### 🎮 1. Yerel USB Host ve G29 Sürücüsü (ESP32-S3)
-* **Otomatik PS3 Modu Uyandırma (Magic Packet):** G29 ilk bağlandığında PS3 modundan tam özellikli Native moda (`0xC24F`) otomatik geçirilir.
-* **540° Direksiyon Açısı:** RC drift ve pist sürüşü için optimize edilmiş donanımsal 540 derece dönüş açısı.
-* **Yüksek Hassasiyetli Ölü Bölge (Deadzone) Filtresi:** Direksiyon ve pedal potansiyometreleri için gürültü önleyici filtreleme.
+### 🎮 1. Native USB Host & G29 Driver (ESP32-S3)
+* **Automatic PS3 Mode Wake-Up (Magic Packet):** Automatically transitions the G29 from PS3 compatibility mode to native high-precision mode (`PID: 0xC24F`).
+* **Hardware 540° Steering Range:** Calibrated for RC drifting and circuit driving.
+* **Deadband & Precision Mapping:** Eliminates analog potentiometer noise around steering center and pedal resting positions.
 
-### 🏎️ 2. Simüle Edilmiş Dinamik Force Feedback (FFB)
-Araçta fiziksel sensör veya telemetri olmamasına rağmen sürücü girdileri analiz edilerek gerçek araç dinamikleri simüle edilir:
-* **Park Hali Oturaklılığı:** Araç dururken lastiklerin asfalta sürtünmesi simüle edilir (`FFB_PARKED_FRICTION`), direksiyona hafif mekanik direnç verilir.
-* **Sürüşte Yumuşama & Kaster Merkezleme:** Gaza dokunulduğu anda sürtünme sıfırlanır, hızlandıkça kaster açısı direksiyonu yumuşak ve zahmetsizce merkeze toplar.
-* **Önden Kayma (Understeer) Hissi:** Yüksek hızda direksiyon aşırı kırıldığında ön lastik tutunma kaybı simüle edilerek merkezleme yay direnci %20 hafifletilir.
-* **Canlı Aç/Kapa:** Sürüş esnasında **R3 tuşuna** basılarak veya `CONFIG.h` üzerinden simülasyon tek dokunuşla kapatılıp açılabilir.
+### 🏎️ 2. Dynamic Simulated Force Feedback (FFB)
+Because RC models lack onboard telemetry sensors, the S3 runs a lightweight vehicle dynamics physics model:
+* **Parked Resistance (Tire Scrub):** At zero speed, simulates tire contact scrub resistance against pavement (`FFB_PARKED_FRICTION`), giving a grounded, realistic wheel weight.
+* **Instant Throttle Softening:** The instant throttle is applied, friction drops immediately to `0.00`, allowing the wheel to turn effortlessly and smoothly.
+* **Caster Centering (Self-Aligning Torque):** As vehicle speed builds, caster geometry naturally guides the wheel back to center.
+* **Understeer Simulation:** At high speeds with extreme steering angle, front tire grip loss is simulated by softening centering torque by 20%.
+* **Live Toggle:** Toggle FFB on or off in real time by pressing **R3** or setting `#define FFB_SIMULATION_ENABLED` in `CONFIG.h`.
 
-### 🚦 3. Gaz Pedalı ile Senkronize RPM LED'leri
-* Sürüş modunda G29 üzerindeki 5 kademeli devir LED'i gaz pedalının konumuna göre anlık senkronize çalışır:
-  * `%0 – %10` : Sönük (Boşta / Rölanti)
-  * `%10 – %30`: 1 Yeşil LED
-  * `%30 – %50`: 2 Yeşil LED
-  * `%50 – %70`: 2 Yeşil + 1 Sarı LED
-  * `%70 – %90`: 2 Yeşil + 2 Sarı LED
-  * `%90 – %96`: 5 LED Tamamı Sabit Açık
-  * `%96 – %100`: **Shift Light / Kesici Flaş Efekti** (~80ms aralıklarla hızlı flaş)
-* Akıllı önbellek mekanizması ile USB hattına gereksiz paket gönderilmez, 50 Hz sürüş paketlerinde sıfır gecikme sağlanır.
+### 🚦 3. Throttle-Synchronized RPM Shift LEDs
+* In driving mode, the G29's 5 shift LEDs synchronize with throttle pedal position:
+  * `0% – 10%`: All LEDs Off (Idle / Deadband)
+  * `10% – 30%`: 1 Green LED
+  * `30% – 50%`: 2 Green LEDs
+  * `50% – 70%`: 2 Green + 1 Yellow LED
+  * `70% – 90%`: 2 Green + 2 Yellow LEDs
+  * `90% – 96%`: All 5 LEDs Solid On (Green + Yellow + Red)
+  * `96% – 100%`: **Rev Limiter / Shift Light Flash** (~80 ms rapid blink)
+* Smart cache filtering ensures USB OUT packets are only dispatched when the LED mask changes, avoiding USB bus saturation.
 
-### 🚗 4. Çoklu Araç Yönetimi (5 Araç Desteği)
-* S3 vericisi tek bir G29 ile **5 farklı RC aracı** yönetebilir.
-* Direksiyon üzerinden tek hareketle araç değiştirilebilir.
-* Her araç için EPA, Trim, Expo ve Gyro ayarları S3 ve C3 üzerindeki **NVS (Non-Volatile Storage)** bellekte bağımsız saklanır.
+### 🚗 4. Multi-Vehicle Management (5 Cars Supported)
+* Manage up to **5 different RC vehicles** from a single G29 steering wheel.
+* Switch active cars on the fly using **ENTER + Rotary Dial**.
+* Independent EPA, Trim, Expo curves, and Gyro Gain profiles are stored in **NVS (Non-Volatile Storage)** on both S3 and C3.
 
-### 🛡️ 5. Çift Yönlü Güvenlik, Failsafe ve Auto-Reconnect
-* **Sırasız Açılma Özgürlüğü:** Önce aracı, sonra direksiyonu açabilir; ya da tam tersini yapabilirsiniz.
-* **Otomatik Yeniden Bağlanma:** Araçta pil değişimi yapıldığında veya sinyal koptuğunda S3 bunu ACK geri bildiriminden anında yakalar; araç açıldığı anda uyanma ve konfigürasyon paketlerini otomatik yeniden fırlatır.
-* **Acil Durum Failsafe:** Direksiyon bağlantısı koptuğunda veya sinyal kesildiğinde araç gazı anında 1500 µs (Nötr / Stop) konumuna alır.
-* **30 Saniye Hareketsizlik Uykusu:** Direksiyon ve pedallara 30 saniye dokunulmazsa motor akımları kesilir ve araç uyku moduna geçer.
+### 🛡️ 5. Bidirectional Safety, Failsafe & Auto-Reconnection
+* **Power-On Order Independence:** Turn on the wheel or the car in any order; the connection establishes seamlessly.
+* **Auto-Reconnect with ACK Tracking:** If the vehicle battery is swapped or power drops, the S3 detects packet acknowledgments and automatically sends wake-up and config packets upon reconnection.
+* **Hardware Failsafe:** Shuts off throttle (neutral 1500 µs) immediately if the USB cable disconnects or RF packets drop.
+* **Inactivity Sleep:** Enters power-saving sleep after 30 seconds of inactivity.
 
 ---
 
-## 🎮 Direksiyon Tuş ve Kontrol Haritası
+## 🎮 Wheel Controls & Button Mapping
 
-### Normal Sürüş Modu (`STATE_SYS_ACTIVE`)
-| Tuş / Eylem | İşlev | Bildirim / Geri Bildirim |
+### Normal Driving Mode (`STATE_SYS_ACTIVE`)
+| Control / Action | Function | Feedback / Status |
 | :--- | :--- | :--- |
-| **Direksiyon** | Ön tekerlek yön kontrolü (1000 - 2000 µs) | Simüle Kaster ve Merkezleme |
-| **Gaz Pedalı** | İleri hız kontrolü (1500 - 2000 µs) | G29 RPM LED'leri Kademeli Yanar |
-| **Fren Pedalı** | Fren ve Geri Vites (1500 - 1000 µs) | Ağırlık transferi direnci |
-| **R3 Tuşu** | **FFB Simülasyonunu Canlı Aç / Kapat** | 2 Yeşil LED (Açık) / 1 Kırmızı LED (Kapalı) |
-| **ENTER (Basılı Tut) + Dial Sağa / + / D-Pad Sağ** | **Sonraki Araca Geç (Araç 1 - 5)** | Geçilen aracın LED numarası yanar |
-| **ENTER (Basılı Tut) + Dial Sola / - / D-Pad Sol** | **Önceki Araca Geç (Araç 1 - 5)** | Geçilen aracın LED numarası yanar |
-| **PS Tuşu** *(veya SHARE + OPTIONS)* | **Dev Mode'a Giriş (1.5 sn basılı tut)** | 3 Kez Hızlı Flaş Animasyonu |
+| **Steering Wheel** | Front steering control (1000 – 2000 µs) | Simulated caster return |
+| **Throttle Pedal** | Forward speed control (1500 – 2000 µs) | RPM shift LEDs illuminate |
+| **Brake Pedal** | Brake & Reverse (1500 – 1000 µs) | Weight transfer resistance |
+| **R3 Button** | **Toggle Simulated FFB On / Off** | 2 Green LEDs (On) / 1 Red LED (Off) |
+| **ENTER (Hold) + Dial Right / + / D-Pad Right** | **Switch to Next Car (Cars 1 – 5)** | Active car ID LED blinks |
+| **ENTER (Hold) + Dial Left / - / D-Pad Left** | **Switch to Previous Car (Cars 1 – 5)** | Active car ID LED blinks |
+| **PS Button** *(or SHARE + OPTIONS)* | **Enter Dev Mode (Hold for 1.5s)** | 3 Fast LED Flash Intro Animation |
 
 ---
 
-## 🛠️ Dev Mode (Direksiyon Üzeri Ayar Menüsü)
+## 🛠️ Dev Mode (On-Wheel Configuration GUI)
 
-Direksiyon üzerinde **PS tuşuna 1.5 saniye basılı tutulduğunda** Dev Mode aktifleşir. Bu modda RC aracın tüm parametreleri bilgisayar veya tornavida olmadan direksiyon üzerinden ayarlanır:
+Holding the **PS button for 1.5 seconds** activates Dev Mode, allowing real-time calibration of the vehicle without a computer or screwdriver:
 
-### Menü Gezintisi
-* **D-Pad YUKARI / AŞAĞI:** Menüler arasında geçiş yapar. Aktif menünün LED'i yanıp söner.
-* **D-Pad SAĞ / SOL:** Menü içinde alt parametre seçer (Örn: Sol EPA / Sağ EPA).
-* **Kırmızı Çark (Dial) veya +/- Tuşları:** Değeri artırır veya azaltır.
-* **Kare (SQUARE) Tuşu:** Reverse (Ters Yön) ayarını tersine çevirir.
-* **PS Tuşu (1.5 sn):** Dev Mode'dan çıkar, ayarları **NVS belleğe kaydeder** ve araca gönderir.
+### Menu Navigation
+* **D-Pad UP / DOWN:** Cycle through menus. The LED of the active menu blinks.
+* **D-Pad RIGHT / LEFT:** Select sub-parameters (e.g. Left EPA vs. Right EPA).
+* **Rotary Dial or +/- Buttons:** Increment or decrement parameter values.
+* **SQUARE Button:** Toggle channel reverse (Invert direction).
+* **PS Button (1.5s):** Exit Dev Mode, commit changes to **NVS flash**, and send updated config to the vehicle.
 
-### Menü Listesi ve LED Gösterimleri
+### Menu List & LED Indicators
 
-| Menü # | Gösterge LED'i | Parametre | Ayar Açıklaması |
+| Menu # | LED Indicator | Parameter | Description |
 | :---: | :---: | :--- | :--- |
-| **1** | **Yeşil 1** | **Direksiyon EPA** | Direksiyon sol ve sağ maksimum dönüş limitleri (%30 - %120). Direksiyon sola çevrildiğinde sol, sağa çevrildiğinde sağ EPA ayarlanır. |
-| **2** | **Yeşil 2** | **Direksiyon Expo / Eğri** | 0: Doğrusal (Linear), 1: Yumuşak Merkez Expo, 2: Agresif Drift Expo |
-| **3** | **Sarı 1** | **Gaz & Fren EPA** | İleri maksimum gaz ve geri fren güç sınırları (%30 - %100). |
-| **4** | **Sarı 2** | **Gaz Expo / Eğri** | 0: Doğrusal gaz tepkisi, 1: Yumuşak kalkış, 2: Agresif gaz |
-| **5** | **Kırmızı** | **Direksiyon Sub-Trim** | Servo mekanik merkez kaçıklığını giderir. Merkezdeyken Sarı 1 LED'i yanar (-25 ile +25 derece). |
-| **6** | **Yeşil 1 + Kırmızı** | **Gyro Gain (Kazanç)** | Drift jiroskopunun hassasiyetini ayarlar (%0 - %100, GPIO 0 PWM çıkışı). |
-| **7** | **Orta 3 LED (Yeşil 2 + Sarı 1+2)** | **Araç Profili Seçimi** | Aktif aracı seçer (1 - 5 arası LED göstergeli). |
+| **1** | **Green 1** | **Steering EPA** | Independent Left / Right end-point adjustment (30% – 120%). Turn the wheel left to adjust Left EPA, turn right to adjust Right EPA. |
+| **2** | **Green 2** | **Steering Curve / Expo** | 0: Linear, 1: Mild Center Expo, 2: Aggressive Drift Expo |
+| **3** | **Yellow 1** | **Throttle & Brake EPA** | Forward maximum throttle and reverse/brake maximum power (30% – 100%). |
+| **4** | **Yellow 2** | **Throttle Curve / Expo** | 0: Linear, 1: Soft Launch Expo, 2: Aggressive Throttle |
+| **5** | **Red** | **Steering Sub-Trim** | Mechanical servo center calibration. Center position indicated by Yellow 1 LED (-25 to +25 degrees). |
+| **6** | **Green 1 + Red** | **Gyro Gain** | Drift gyro sensitivity (0% – 100%, output on GPIO 0 PWM). |
+| **7** | **Middle 3 LEDs (Green 2 + Yellow 1+2)** | **Car Profile Select** | Selects active car profile (1 – 5 with LED indicator). |
 
-> 💾 **Flash Bellek Ömrü Koruması (Wear-Leveling):** Değerler değiştirilirken flash belleğe sürekli yazma yapılmaz. Ayarlar yalnızca Dev Mode'dan çıkıldığında ve değişiklik varsa tek seferde NVS'e yazılır.
+> 💾 **Flash Wear-Leveling Protection:** Values adjusted during Dev Mode are kept in RAM until exiting Dev Mode (or after 5 seconds of inactivity), preventing unnecessary write cycles to flash memory.
 
 ---
 
-## 🎛️ Simüle Force Feedback (FFB) Fiziği
+## 🎛️ Simulated Force Feedback (FFB) Physics
 
-Araç üzerinde fiziksel telemetri sensörü bulunmadığından, S3 içerisindeki fizik motoru girdileri aşağıdaki modele göre işler:
+Because RC models do not carry sensors, the S3 simulates vehicle dynamics directly from driver inputs:
 
 ```
-                  ┌───────────────┐
-  Gaz Pedalı ───► │ Hız Entegrat. │ ──► Tahmini Hız (v_est)
-  Fren Pedalı ──► │ ve Drag Modeli│
-                  └───────┬───────┘
+                  ┌────────────────┐
+  Throttle Pedal ─►│ Speed Integr.  │ ──► Estimated Speed (v_est)
+  Brake Pedal ────►│  & Drag Model  │
+                  └───────┬────────┘
                           │
          ┌────────────────┴────────────────┐
          ▼                                 ▼
 ┌──────────────────┐             ┌──────────────────┐
-│ Sürtünme Fiziği  │             │ Kaster & Merkez  │
-│ - Park Hali: Ağır│             │ - Hızlandıkça    │
-│ - Sürüş: Sıfır   │             │   kolay dönüş    │
-│ - Fren: Yük trf. │             │ - Understeer gev.│
+│  Friction Model  │             │ Caster & Return  │
+│ - Parked: Weight │             │ - Speed-based    │
+│ - Throttle: Zero │             │   caster pull    │
+│ - Brake: Weight  │             │ - Understeer slip│
 └────────┬─────────┘             └────────┬─────────┘
          │                                │
          └────────► [ G29 HID ] ◄─────────┘
 ```
 
-### [CONFIG.h](file:///C:/Users/eraya/OneDrive/Desktop/Car_Project/Car_Project/ESP32_S3/lib/config/CONFIG.h) Parametreleri
+### [CONFIG.h](file:///C:/Users/eraya/OneDrive/Desktop/Car_Project/Car_Project/ESP32_S3/lib/config/CONFIG.h) Parameters
 
 ```c
-#define FFB_SIMULATION_ENABLED   1       // 1: Simüle FFB Açık, 0: Kapalı (Tamamen serbest direksiyon)
-#define FFB_PARKED_FRICTION      0.28f   // Park halindeki hafif sertlik (0.0 - 1.0)
-#define FFB_MIN_FRICTION         0.00f   // Sürüş halindeki sürtünme (0.00 = tüy gibi hafif, sıfır direnç)
-#define FFB_MAX_FRICTION         0.25f   // Sert frende ulaşılabilecek maksimum sürtünme
+#define FFB_SIMULATION_ENABLED   1       // 1: Enabled, 0: Disabled (Wheel runs completely free)
+#define FFB_PARKED_FRICTION      0.28f   // Parked mechanical friction (0.0 - 1.0)
+#define FFB_MIN_FRICTION         0.00f   // Driving friction (0.00 = feather-light, zero resistance)
+#define FFB_MAX_FRICTION         0.25f   // Maximum friction under heavy braking
 
-#define FFB_PARKED_STRENGTH      0.08f   // Park halindeki merkezleme gücü (hafif)
-#define FFB_MAX_STRENGTH         0.18f   // Sürüş halindeki merkezleme gücü (yumuşak ve tatlı dönüş)
-#define FFB_PARKED_RATE          0.10f   // Park halindeki merkezleme eğimi
-#define FFB_MAX_RATE             0.25f   // Sürüş halindeki merkezleme eğimi (yumuşak yay)
+#define FFB_PARKED_STRENGTH      0.08f   // Parked centering spring strength
+#define FFB_MAX_STRENGTH         0.18f   // Driving centering spring strength (smooth return)
+#define FFB_PARKED_RATE          0.10f   // Parked centering ramp slope
+#define FFB_MAX_RATE             0.25f   // Driving centering ramp slope
 ```
 
 ---
 
-## 🔌 Donanım Bağlantıları ve Pin Şeması
+## 🔌 Hardware Wiring & Pinout
 
-### 1. ESP32-S3 Verici Ünitesi (Direksiyon Tarafı)
-| ESP32-S3 Pini | Bağlantı | Açıklama |
+### 1. ESP32-S3 Transmitter (Steering Wheel Side)
+| ESP32-S3 Pin | Connection | Description |
 | :--- | :--- | :--- |
-| **GPIO 19** | USB D- | Logitech G29 USB Beyaz Kablo |
-| **GPIO 20** | USB D+ | Logitech G29 USB Yeşil Kablo |
-| **5V (VBUS)** | USB 5V | Logitech G29 Kırmızı Kablo (Harici 5V önerilir) |
-| **GND** | USB GND | Logitech G29 Siyah Kablo |
-| **GPIO 48** | Dahili RGB LED | Sistem durumu (Mavi: Bekliyor, Yeşil: Aktif, Kırmızı: Hata) |
+| **GPIO 19** | USB D- | Logitech G29 USB White Wire |
+| **GPIO 20** | USB D+ | Logitech G29 USB Green Wire |
+| **5V (VBUS)** | USB 5V | Logitech G29 USB Red Wire (External 5V supply recommended) |
+| **GND** | USB GND | Logitech G29 USB Black Wire |
+| **GPIO 48** | Onboard RGB LED | System status (Blue: Waiting, Green: Active, Red: Error) |
 
-### 2. ESP32-C3 Alıcı Ünitesi (Araç Tarafı)
-| ESP32-C3 Pini | Donanım | Açıklama |
+### 2. ESP32-C3 Receiver (Vehicle Side)
+| ESP32-C3 Pin | Target Hardware | Description |
 | :--- | :--- | :--- |
-| **GPIO 3** | Yön Servosu Sinyali | Standart 50 Hz PWM (1000 - 2000 µs) |
-| **GPIO 1** | ESC / Motor Sürücü Sinyali | Standart 50 Hz PWM (1000 - 2000 µs) |
-| **GPIO 0** | Drift Gyro Gain Sinyali | Hassasiyet kontrolü (1000 - 2000 µs) |
-| **GPIO 8** | Dahili Durum LED'i | Bağlantı durumu göstergesi |
-| **5V / VIN** | BEC (ESC 5V Çıkışı) | Alıcı beslemesi |
-| **GND** | Ortak GND | Araç şasesi / pil eksi ucu |
+| **GPIO 3** | Steering Servo Signal | Standard 50 Hz PWM (1000 – 2000 µs) |
+| **GPIO 1** | ESC / Throttle Signal | Standard 50 Hz PWM (1000 – 2000 µs) |
+| **GPIO 0** | Drift Gyro Gain Signal | Sensitivity PWM (1000 – 2000 µs) |
+| **GPIO 8** | Onboard Status LED | Connection state indicator |
+| **5V / VIN** | BEC (ESC 5V Output) | Receiver power supply |
+| **GND** | Common GND | System ground / battery negative |
 
 ---
 
-## ⚙️ Konfigürasyon Parametreleri
+## ⚙️ Configuration Reference
 
-### Araç MAC Adres Tablosu ([CONFIG.h](file:///C:/Users/eraya/OneDrive/Desktop/Car_Project/Car_Project/ESP32_S3/lib/config/CONFIG.h))
-Çoklu araç kullanmak için S3 içerisindeki MAC tablosuna araçlarınızın ESP32-C3 MAC adreslerini ekleyin:
+### Vehicle MAC Address Table ([CONFIG.h](file:///C:/Users/eraya/OneDrive/Desktop/Car_Project/Car_Project/ESP32_S3/lib/config/CONFIG.h))
+Add your ESP32-C3 MAC addresses to the table on the S3:
 
 ```c
 static const uint8_t CAR_MAC_TABLE[CAR_MAX_COUNT][6] = {
-    {0x90, 0x64, 0x9B, 0x08, 0x0E, 0x6C}, // Araç 1 (ID 0)
-    {0x00, 0x00, 0x00, 0x00, 0x00, 0x00}, // Araç 2 (ID 1)
-    {0x00, 0x00, 0x00, 0x00, 0x00, 0x00}, // Araç 3 (ID 2)
-    {0x00, 0x00, 0x00, 0x00, 0x00, 0x00}, // Araç 4 (ID 3)
-    {0x00, 0x00, 0x00, 0x00, 0x00, 0x00}, // Araç 5 (ID 4)
+    {0x90, 0x64, 0x9B, 0x08, 0x0E, 0x6C}, // Car 1 (ID 0)
+    {0x00, 0x00, 0x00, 0x00, 0x00, 0x00}, // Car 2 (ID 1)
+    {0x00, 0x00, 0x00, 0x00, 0x00, 0x00}, // Car 3 (ID 2)
+    {0x00, 0x00, 0x00, 0x00, 0x00, 0x00}, // Car 4 (ID 3)
+    {0x00, 0x00, 0x00, 0x00, 0x00, 0x00}, // Car 5 (ID 4)
 };
 ```
 
 ---
 
-## 🚀 Kurulum ve Yükleme (PlatformIO)
+## 🚀 Setup & Flashing (PlatformIO)
 
-Her iki proje de **ESP-IDF v6.0.1** tabanlı olup **PlatformIO** ile derlenmeye hazırdır.
+Both projects are built on **ESP-IDF v6.0.1** and managed via **PlatformIO**.
 
-### 1. ESP32-S3 (Verici) Derleme ve Yükleme
+### 1. Build and Flash ESP32-S3 (Transmitter)
 ```bash
 cd ESP32_S3
 pio run -e esp32-s3-devkitc-1 --target upload
 ```
 
-### 2. ESP32-C3 (Alıcı) Derleme ve Yükleme
+### 2. Build and Flash ESP32-C3 (Receiver)
 ```bash
 cd ESP32_C3
 pio run -e esp32-c3-devkitm-1 --target upload
 ```
 
-### 3. İlk Çalıştırma
-1. Logitech G29 setini 24V harici adaptörüne takın.
-2. Direksiyonun üzerindeki mod anahtarının **PS3** konumunda olduğundan emin olun.
-3. G29 USB kablosunu ESP32-S3'ün USB Host pinlerine bağlayın.
-4. ESP32-S3 direksiyonu otomatik algılayacak, kalibrasyonunu tamamlayacak ve hazır hale getirecektir.
-5. RC aracınıza güç verin; sistem anında eşleşecek ve sürüşe hazır olacaktır!
-
+### 3. First Power-On
+1. Connect the Logitech G29 wheel to its 24V power supply.
+2. Ensure the top mode switch is set to **PS3**.
+3. Plug the G29 USB cable into the ESP32-S3 USB Host port.
+4. The ESP32-S3 automatically wakes the wheel, completes calibration, and enters ready state.
+5. Power up the RC car; pairing is instantaneous and ready to drive!

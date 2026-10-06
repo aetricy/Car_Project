@@ -2,7 +2,7 @@
 #include <string.h>
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
-#include "freertos/queue.h" // Kuyruk kütüphanesi eklendi
+#include "freertos/queue.h"
 #include "esp_wifi.h"
 #include "esp_now.h"
 #include "nvs_flash.h"
@@ -30,19 +30,19 @@ extern volatile int current_state;
 
 volatile uint32_t last_packet_time = 0; 
 
-// --- VERİ SAKLAMA ALANLARI ---
-// 1. Sürüş verisi global kalır (Sürekli güncellenir, ezilmesi sorun değil)
+// --- DATA STORAGE BUFFERS ---
+// 1. Drive telemetry remains global (continually updated, safe to overwrite)
 static car_drive_packet_t latest_drive_packet;
 static volatile bool new_data_available = false;
 
-// 2. Komut ve Ayarlar için Kuyruklar (Asla kaybolmamalı)
+// 2. Queues for commands and config packets (must not be dropped)
 QueueHandle_t rx_command_queue;
 QueueHandle_t rx_config_queue;
 
 static void on_data_recv(const esp_now_recv_info_t *recv_info, const uint8_t *data, int len) {
     if (len == 0 || data == NULL) return;
 
-    // Gelen paketin tipini ilk bayttan oku
+    // Read incoming packet type from first byte
     uint8_t packet_type = data[0];
 
     if (packet_type == PKT_TYPE_DRIVE && len == sizeof(car_drive_packet_t)) {
@@ -50,7 +50,7 @@ static void on_data_recv(const esp_now_recv_info_t *recv_info, const uint8_t *da
         new_data_available = true;
     } 
     else if (packet_type == PKT_TYPE_COMMAND && len == sizeof(car_command_packet_t)) {
-        // Callback içinde kuyruğa gönder (bekleme 0)
+        // Enqueue inside callback (non-blocking)
         xQueueSend(rx_command_queue, data, 0);
     } 
     else if (packet_type == PKT_TYPE_CONFIG && len == sizeof(car_config_packet_t)) {
@@ -59,7 +59,7 @@ static void on_data_recv(const esp_now_recv_info_t *recv_info, const uint8_t *da
 }
 
 void init_esp_now_receiver(void) {
-    // Alıcı kuyruklarını oluştur
+    // Create receiver queues
     rx_command_queue = xQueueCreate(5, sizeof(car_command_packet_t));
     rx_config_queue  = xQueueCreate(3, sizeof(car_config_packet_t));
 
@@ -77,23 +77,23 @@ void init_esp_now_receiver(void) {
     ESP_ERROR_CHECK(esp_wifi_init(&cfg));
     ESP_ERROR_CHECK(esp_wifi_set_mode(WIFI_MODE_STA));
     ESP_ERROR_CHECK(esp_wifi_start());
-    ESP_ERROR_CHECK(esp_wifi_set_ps(WIFI_PS_NONE));                   // Kesintisiz ESP-NOW için güç tasarrufunu kapat
-    ESP_ERROR_CHECK(esp_wifi_set_channel(1, WIFI_SECOND_CHAN_NONE));   // Sabit Kanal 1
+    ESP_ERROR_CHECK(esp_wifi_set_ps(WIFI_PS_NONE));                   // Disable Wi-Fi power save for lowest latency
+    ESP_ERROR_CHECK(esp_wifi_set_channel(1, WIFI_SECOND_CHAN_NONE));   // Fixed Wi-Fi Channel 1
 
     uint8_t mac[6];
     esp_read_mac(mac, ESP_MAC_WIFI_STA);
     RC_PRINT("\n==================================================\n");
-    RC_PRINT("ESP32-C3 Alici MAC: %02X:%02X:%02X:%02X:%02X:%02X\n", 
+    RC_PRINT("ESP32-C3 Receiver MAC: %02X:%02X:%02X:%02X:%02X:%02X\n", 
              mac[0], mac[1], mac[2], mac[3], mac[4], mac[5]);
     RC_PRINT("==================================================\n\n");
 
     ESP_ERROR_CHECK(esp_now_init());
     ESP_ERROR_CHECK(esp_now_register_recv_cb(on_data_recv));
 
-    RC_PRINT("[INFO] ESP-NOW Alici modulu basariyla baslatildi.\n");
+    RC_PRINT("[INFO] ESP-NOW receiver module initialized successfully.\n");
 }
 
-// Sürüş verisini çek (Ana döngü kullanır)
+// Fetch drive data (polled by main task)
 bool esp_now_get_latest_data(car_drive_packet_t *out_data) {
     if (new_data_available) {
         memcpy(out_data, &latest_drive_packet, sizeof(car_drive_packet_t));
@@ -103,7 +103,7 @@ bool esp_now_get_latest_data(car_drive_packet_t *out_data) {
     return false;
 }
 
-// Komut verisini çek (Ana döngü kullanır)
+// Fetch command data (polled by main task)
 bool esp_now_get_command_data(car_command_packet_t *out_data) {
     if (rx_command_queue != NULL) {
         return (xQueueReceive(rx_command_queue, out_data, 0) == pdTRUE);
@@ -111,7 +111,7 @@ bool esp_now_get_command_data(car_command_packet_t *out_data) {
     return false;
 }
 
-// Ayar verisini çek (Ana döngü kullanır)
+// Fetch config data (polled by main task)
 bool esp_now_get_config_data(car_config_packet_t *out_data) {
     if (rx_config_queue != NULL) {
         return (xQueueReceive(rx_config_queue, out_data, 0) == pdTRUE);
