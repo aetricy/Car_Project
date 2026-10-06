@@ -58,7 +58,8 @@ Because RC models lack onboard telemetry sensors, the S3 runs a lightweight vehi
 * **Parked Resistance (Tire Scrub):** At zero speed, simulates tire contact scrub resistance against pavement (`FFB_PARKED_FRICTION`), giving a grounded, realistic wheel weight.
 * **Instant Throttle Softening:** The instant throttle is applied, friction drops immediately to `0.00`, allowing the wheel to turn effortlessly and smoothly.
 * **Caster Centering (Self-Aligning Torque):** As vehicle speed builds, caster geometry naturally guides the wheel back to center.
-* **Understeer Simulation:** At high speeds with extreme steering angle, front tire grip loss is simulated by softening centering torque by 20%.
+* **Understeer Simulation:** At high speeds with extreme st
+eering angle, front tire grip loss is simulated by softening centering torque by 20%.
 * **Live Toggle:** Toggle FFB on or off in real time by pressing **R3** or setting `#define FFB_SIMULATION_ENABLED` in `CONFIG.h`.
 
 ### 🚦 3. Throttle-Synchronized RPM Shift LEDs
@@ -227,3 +228,9 @@ pio run -e esp32-c3-devkitm-1 --target upload
 3. Plug the G29 USB cable into the ESP32-S3 USB Host port.
 4. The ESP32-S3 automatically wakes the wheel, completes calibration, and enters ready state.
 5. Power up the RC car; pairing is instantaneous and ready to drive!
+
+<img width="1500" height="2000" alt="WhatsApp Image 2026-10-07 at 02 31 24" src="https://github.com/user-attachments/assets/26fd6ef2-0d26-4bcc-aa62-3e7af949c3bc" />
+
+<img width="1500" height="2000" alt="WhatsApp Image 2026-10-07 at 02 31 24 (1)" src="https://github.com/user-attachments/assets/7cdd4af6-e01e-4d1a-b776-8249968abedc" />
+
+   
