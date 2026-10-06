@@ -5,7 +5,7 @@
 #include <stdbool.h>
 #include "g29_config.h"
 
-// 6 Parametre Menüsü (G29 RPM LED'leri ile gösterilir)
+// 7 Parametre Menüsü (G29 RPM LED'leri ile gösterilir)
 typedef enum {
     CFG_MENU_ST_EPA = 0,    // LED 1 (Yeşil 1) : Direksiyon EPA (Sol / Sağ / Dual Rate)
     CFG_MENU_ST_CURVE,      // LED 2 (Yeşil 2) : Direksiyon Eğrisi / Expo (0: Lineer, 1: Yumuşak Expo, 2: Agresif Expo)
@@ -13,13 +13,25 @@ typedef enum {
     CFG_MENU_TH_CURVE,      // LED 4 (Sarı 2)  : Gaz Eğrisi / Expo (0: Lineer, 1: Yumuşak Expo, 2: Agresif Expo)
     CFG_MENU_ST_TRIM,       // LED 5 (Kırmızı) : Direksiyon Sub-Trim (Merkez İnce Ayarı)
     CFG_MENU_GYRO_GAIN,     // LED 1+5 (Yeşil 1 + Kırmızı) : Gyro Gain (%0 - %100, GPIO 0 PWM)
+    CFG_MENU_CAR_SELECT,    // LED 2+3+4 (Orta 3 LED) : Araç Seçimi (1 - 5 arası araç)
     CFG_MENU_COUNT
 } cfg_menu_t;
 
 /**
- * @brief Config kontrolcüsünü varsayılan ayarlarla başlatır.
+ * @brief Config kontrolcüsünü NVS'ten yükleyerek başlatır.
  */
 void config_control_init(void);
+
+/**
+ * @brief Aktif aracı değiştirir, NVS'e kaydeder ve o aracın ayarlarını yükler.
+ * @param car_id 0-4 arası araç indeksi
+ */
+bool config_control_select_car(uint8_t car_id);
+
+/**
+ * @brief Mevcut aktif araç indeksini döner (0-4).
+ */
+uint8_t config_control_get_active_car_id(void);
 
 /**
  * @brief Dev Mode aktif mi sorgular.

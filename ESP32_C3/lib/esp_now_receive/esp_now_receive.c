@@ -77,6 +77,8 @@ void init_esp_now_receiver(void) {
     ESP_ERROR_CHECK(esp_wifi_init(&cfg));
     ESP_ERROR_CHECK(esp_wifi_set_mode(WIFI_MODE_STA));
     ESP_ERROR_CHECK(esp_wifi_start());
+    ESP_ERROR_CHECK(esp_wifi_set_ps(WIFI_PS_NONE));                   // Kesintisiz ESP-NOW için güç tasarrufunu kapat
+    ESP_ERROR_CHECK(esp_wifi_set_channel(1, WIFI_SECOND_CHAN_NONE));   // Sabit Kanal 1
 
     uint8_t mac[6];
     esp_read_mac(mac, ESP_MAC_WIFI_STA);

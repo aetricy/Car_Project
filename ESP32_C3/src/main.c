@@ -105,13 +105,11 @@ void app_main(void) {
         if (drive_data_received) {
             last_packet_time = xTaskGetTickCount(); // Sinyal geldi, zamanlayıcıyı sıfırla
             
-            // Eğer araç menzil dışına çıkıp Failsafe'e düştüyse ve 
-            // tekrar menzile girip paket almaya başladıysa OTOMATİK uyan.
-            // (Not: USB kopsaydı S3 zaten drive paketi yollamayı keserdi, 
-            // yani paket geliyorsa bağlantı tamamen sağlıklıdır.)
-            if (current_state == STATE_FAILSAFE) {
+            // Eğer araç beklemedeyse (STATE_WAITING) veya menzil dışından dönüp Failsafe'e düştüyse
+            // paket almaya başladığı anda OTOMATİK uyan ve aktif moda geç!
+            if (current_state == STATE_WAITING || current_state == STATE_FAILSAFE) {
                 current_state = STATE_ACTIVE;
-                printf("[SİSTEM] Baglanti Tekrar Kuruldu! Arac Otomatik Aktif.\n");
+                printf("[SİSTEM] Paket Alindi! Arac Otomatik Aktif Moduna Gecti.\n");
             }
 
             if (current_state == STATE_ACTIVE) {

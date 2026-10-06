@@ -34,7 +34,12 @@ void g29_led_ui_show_menu_single(uint8_t menu_index, bool is_on) {
         g29_led_ui_set_raw(G29_LED_1_GREEN1 | G29_LED_5_RED);
         return;
     }
-    if (menu_index > 4) {
+    if (menu_index == 6) {
+        // Menü 7 (Araç Seçimi): Yeşil 2 + Sarı 1 + Sarı 2 (3 orta LED) birlikte yanar
+        g29_led_ui_set_raw(G29_LED_2_GREEN2 | G29_LED_3_YELLOW1 | G29_LED_4_YELLOW2);
+        return;
+    }
+    if (menu_index > 6) {
         g29_led_ui_clear();
         return;
     }

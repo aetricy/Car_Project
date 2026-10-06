@@ -147,6 +147,27 @@ void Logic_Task(void *pvParameters) {
                     ESP_LOGI(TAG, "Araca WAKE_UP (Failsafe/Uyku Cikisi) Komutu Gonderildi.");
                 }
 
+                // Araç yeni açıldıysa veya elektrik kesilip tekrar bağlandıysa (Auto-Reconnect):
+                if (esp_now_sender_check_and_clear_reconnected()) {
+                    ESP_LOGI(TAG, ">>> ARAÇ ÇEVRİMİÇİ OLDU! (Bağlantı Kuruldu) - Config ve Uyanma Gönderiliyor <<<");
+
+                    // 1. Uyanma komutu fırlat
+                    espnow_tx_item_t wake_item;
+                    memset(&wake_item, 0, sizeof(espnow_tx_item_t));
+                    wake_item.length = sizeof(car_command_packet_t);
+                    wake_item.payload.command.packet_type = PKT_TYPE_COMMAND;
+                    wake_item.payload.command.command_id  = CMD_WAKE_UP;
+                    wake_item.payload.command.parameter   = 0;
+                    xQueueSend(espnow_tx_queue, &wake_item, 0);
+
+                    // 2. Güncel aktif ayar paketini fırlat
+                    espnow_tx_item_t cfg_item;
+                    memset(&cfg_item, 0, sizeof(espnow_tx_item_t));
+                    cfg_item.length = sizeof(car_config_packet_t);
+                    cfg_item.payload.config = *config_control_get_active_config();
+                    xQueueSend(espnow_tx_queue, &cfg_item, 0);
+                }
+
                 sleep_command_sent = false;
                 bool new_data = false;
 
