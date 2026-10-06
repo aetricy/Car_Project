@@ -1,5 +1,7 @@
 #include "g29_processor.h"
 #include <stdio.h>
+#include "esp_log.h"
+
 
 // Direksiyon verisini -1.0 ile 1.0 arasına haritalar
 static float map_steering(uint16_t raw_val) {
@@ -34,7 +36,7 @@ static float map_pedal(uint8_t raw_val) {
 }
 
 void g29_process_raw_data(const uint8_t *raw_data, int len, g29_telemetry_t *out_telemetry) {
-    if (len < 9) return; // Güvenli sınır kontrolü (8. indeks dahil okunuyor) 
+    if (len < 9) return; 
 
     // 1. Direksiyon Açısı (4. ve 5. bayt)
     uint16_t raw_steering = raw_data[4] | ((raw_data[5] << 8)); 
@@ -48,13 +50,48 @@ void g29_process_raw_data(const uint8_t *raw_data, int len, g29_telemetry_t *out
     // 3. Butonları Tek Bir Bitmask (buttons_state) İçinde Topla
     out_telemetry->buttons_state = 0;
 
-    /*
-    out_telemetry->button_plus   = (raw_data[2] & LOGIWHEEL_BTN_PLUS) != 0;
-    out_telemetry->button_minus = (raw_data[3] & LOGIWHEEL_BTN_MINUS) != 0;*/
+    // --- BYTE [0]: D-Pad ve Şekil Tuşları ---
+    // D-Pad: Byte 0'ın yüksek (high) 4 biti (0-7 arası değer alır)
+    uint8_t dpad_val = (raw_data[0]) & 0x0F;
+    switch (dpad_val) {
+        case 0: out_telemetry->buttons_state |= BTN_DPAD_UP; break;
+        case 1: out_telemetry->buttons_state |= BTN_DPAD_UP | BTN_DPAD_RIGHT; break;
+        case 2: out_telemetry->buttons_state |= BTN_DPAD_RIGHT; break;
+        case 3: out_telemetry->buttons_state |= BTN_DPAD_RIGHT | BTN_DPAD_DOWN; break;
+        case 4: out_telemetry->buttons_state |= BTN_DPAD_DOWN; break;
+        case 5: out_telemetry->buttons_state |= BTN_DPAD_DOWN | BTN_DPAD_LEFT; break;
+        case 6: out_telemetry->buttons_state |= BTN_DPAD_LEFT; break;
+        case 7: out_telemetry->buttons_state |= BTN_DPAD_LEFT | BTN_DPAD_UP; break;
+    }
 
-    // İleride eklenebilecek diğer butonlar buraya eklenebilir:
-    // if ((raw_data[X] & LOGIWHEEL_BTN_GEAR) != 0) { out_telemetry->buttons_state |= BTN_GEAR_UP; }
+    // Şekiller: Byte 0'ın düşük (low) 4 biti
+    if (raw_data[0] & 0x10) out_telemetry->buttons_state |= BTN_CROSS;
+    if (raw_data[0] & 0x20) out_telemetry->buttons_state |= BTN_SQUARE;
+    if (raw_data[0] & 0x40) out_telemetry->buttons_state |= BTN_CIRCLE;
+    if (raw_data[0] & 0x80) out_telemetry->buttons_state |= BTN_TRIANGLE;
+
+    // --- BYTE [1]: L2/R2, Kulakçıklar ve L3/R3/Share/Options ---
+    if (raw_data[1] & 0x10) out_telemetry->buttons_state |= BTN_SHARE;
+    if (raw_data[1] & 0x20) out_telemetry->buttons_state |= BTN_OPTIONS;
+    if (raw_data[1] & 0x40) out_telemetry->buttons_state |= BTN_R3;
+    if (raw_data[1] & 0x80) out_telemetry->buttons_state |= BTN_L3;
+    
+    if (raw_data[1] & 0x01) out_telemetry->buttons_state |= BTN_PADDLE_RIGHT; // Shift Up
+    if (raw_data[1] & 0x02) out_telemetry->buttons_state |= BTN_PADDLE_LEFT;  // Shift Down
+    if (raw_data[1] & 0x04) out_telemetry->buttons_state |= BTN_R2;
+    if (raw_data[1] & 0x08) out_telemetry->buttons_state |= BTN_L2;
+
+    // --- BYTE [2]: PS Butonu ve + Butonu ---
+    if (raw_data[2] & 0x10) out_telemetry->buttons_state |= BTN_PS;
+    if (raw_data[2] & 0x80) out_telemetry->buttons_state |= BTN_PLUS; // 1000 yüksek nibble = 0x80
+
+    // --- BYTE [3]: Kırmızı Çark (Dial) ve - Butonu ---
+    if (raw_data[3] & 0x01) out_telemetry->buttons_state |= BTN_MINUS;
+    if (raw_data[3] & 0x02) out_telemetry->buttons_state |= BTN_DIAL_RIGHT;
+    if (raw_data[3] & 0x04) out_telemetry->buttons_state |= BTN_DIAL_LEFT;
+    if (raw_data[3] & 0x08) out_telemetry->buttons_state |= BTN_ENTER;
 }
+
 
 // 2. AŞAMA: Float telemetriyi, C3 Alıcısı için 1000-2000 PWM formatına çevirir
 void g29_create_drive_packet(const g29_telemetry_t *telemetry, car_drive_packet_t *out_packet) {

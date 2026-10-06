@@ -23,6 +23,7 @@
 // --- SİSTEM KOMUTLARI (COMMAND ID) ---
 #define CMD_SLEEP_ENTER     0x10  // S3 uykuya geçti, C3 de uykuya geçsin
 #define CMD_WAKE_UP         0x11  // S3 uyandı, C3 de uyanık moda geçsin
+#define CMD_CONFIG_SAVE     0x12  // Dev Mode'dan çıkıldı, ayarları NVS'e hemen kaydet
 #define CMD_FAILSAFE_STOP   0xEE  // Acil Durdurma (Kablo koptu / S3 kapandı)
 
 // ==========================================
@@ -54,7 +55,7 @@ typedef struct __attribute__((packed)) {
     uint8_t  packet_type;     // PKT_TYPE_CONFIG (0x03)
     
     // General Ayarlar
-    uint8_t  st_gyro_gain; // -100 100
+    int8_t   st_gyro_gain;    // -100 to 100 
 
     // Direksiyon (Steering) Ayarları
     int8_t   st_sub_trim;     // Merkez kaydırma (-100 to 100)
