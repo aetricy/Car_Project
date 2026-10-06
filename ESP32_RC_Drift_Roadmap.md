@@ -1,59 +1,54 @@
 ---
 tags: [esp32, freertos, esp-now, rc-drift, logitech-g29, kicad, embedded]
-aliases: [Sim-to-Reality RC Roadmap, ESP32 Drift Araç Sistemi]
+aliases: [Sim-to-Reality RC Roadmap, ESP32 Drift Vehicle System]
 date_created: 2026-08-26
 ---
 
-# 🏎️ ESP32 Sim-to-Reality RC Drift Telemetri & Kontrol Sistemi
+# 🏎️ ESP32 Sim-to-Reality RC Drift Telemetry & Control System
 
-Bu not, ESP32-S3 (Verici/G29 Host) ve ESP32-C3 (Alıcı/Araç) arasında kurulan sıfır gecikmeli, RTOS tabanlı haberleşme altyapısının fiziksel donanıma ve otonom sistemlere dönüştürülmesi için gereken mühendislik yol haritasını içerir. Şase hedefi: 1/24 & 1/28 RWD (Örn: TG Super TT).
-
----
-
-## 📍 FAZ 1: Fiziksel Katman ve Aktüatör Sürüşü
-Haberleşme katmanı tamamlandı. Bu fazda, havadan gelen dijital veriler fiziksel harekete (PWM) dönüştürülecek.
-
-> [!warning] Donanım Uyarısı: 3.3V / 5V Toleransı
-> ESP32-C3'ün GPIO pinleri 5V toleranslı **değildir**. ESC veya yüksek güçlü servolardan gelebilecek sinyal gürültüleri veya 5V geri beslemeleri için araya mutlaka Logic Level Converter (Seviye Dönüştürücü) veya koruyucu direnç eklenmelidir.
-
-- [ ] **Donanımsal PWM Üretimi (MCPWM)**
-  - [ ] ESP-IDF `mcpwm` veya `ledc` çevre birimleri kullanılarak 50Hz (20ms) periyot ayarlanacak.
-  - [ ] Duty cycle aralığı RC standartlarına (1000µs - 2000µs, merkez 1500µs) kalibre edilecek.
-- [ ] **Matematiksel Haritalama (Mapping)**
-  - [ ] G29'dan gelen ham veri (8-bit veya 14-bit) PWM mikrosaniye değerlerine dönüştürülecek.
-  - [ ] Titremeyi (jitter) önlemek için kayan nokta (float) yerine sabit nokta (fixed-point) matematiği kullanılacak.
-- [ ] **Sürüş Dinamikleri (Yazılımsal)**
-  - [ ] Direksiyon için "Expo (Eksponansiyel)" algoritması yazılacak (Merkezde hassas, kenarlarda agresif tepki).
-  - [ ] Gaz ve fren için "Deadzone (Ölü bölge)" ayarları yapılacak.
-
+This engineering roadmap outlines the transformation of the zero-latency, FreeRTOS-based ESP-NOW communication pipeline between the ESP32-S3 (Transmitter / G29 Host) and the ESP32-C3 (Receiver / Car) into physical hardware and autonomous control systems. Chassis target: 1/24 & 1/28 RWD (e.g. TG Super TT).
 
 ---
 
-## 📍 FAZ 2: Çift Yönlü Zaman Bölmeli Telemetri (TDM)
-Sistem sadece emir almamalı, aracın durumunu S3'e (G29'a) geri bildirmelidir.
+## 📍 PHASE 1: Physical Layer & Actuator Driving
+The communication layer is complete. In this phase, wireless digital telemetry is converted into physical actuation (PWM).
 
-> [!danger] RF Çakışması (Collision)
-> S3 saniyede 50 kere veri fırlatırken, C3 de kendi verisini bağımsızca fırlatmaya kalkarsa Wi-Fi bandında çakışmalar (ESP_ERR_ESPNOW_NO_MEM) başlar. Rastgele gönderim yapılmamalıdır.
+> [!warning] Hardware Notice: 3.3V / 5V Logic Tolerance
+> ESP32-C3 GPIO pins are **not** 5V tolerant. To prevent signal noise and inductive 5V back-EMF spikes from ESCs or high-torque servos, always insert a bidirectional Logic Level Converter or protective series resistor network.
 
-- [ ] **TDM (Time-Division Multiplexing) Mimarisi Kurulumu**
-  - [ ] C3, sadece S3'ten paket geldiği an (RX Callback içinde bayrak kaldırarak) kendi telemetri paketini "ACK/Cevap" olarak gönderecek şekilde senkronize edilecek.
-- [ ] **Araç Verilerinin Okunması (C3 Tarafı)**
-  - [ ] ADC kullanılarak Li-Po bataryanın anlık voltaj okuması yapılacak (Gerilim bölücü direnç ağı ile).
-  - [ ] Gyro'dan alınan anlık kayma açısı (Slip angle) telemetri paketine eklenecek.
-- [ ] **Sürücü Geri Bildirimi (S3 Tarafı)**
-  - [ ] Gelen batarya verisi belli bir eşiğin altındaysa G29 üzerindeki RPM LED'leri (veya harici bir buzzer) ile uyarı verdirilecek.
+- [x] **Hardware PWM Generation (LEDC / MCPWM)**
+  - [x] Configured 330Hz / 50Hz period using ESP-IDF `ledc` peripheral.
+  - [x] Calibrated duty cycle range to RC standard (1000µs - 2000µs, 1500µs neutral center).
+- [x] **Mathematical Mapping & Signal Processing**
+  - [x] G29 raw telemetry converted to calibrated microsecond PWM timings.
+  - [x] Exponential curve algorithms ("Linear", "Expo Soft", "Expo Aggressive") implemented for steering and throttle.
+  - [x] Dynamic deadzone compensation implemented to eliminate center jitter.
 
 ---
 
-## 📍 FAZ 3: G29 Force Feedback (FFB) Entegrasyonu
-Projenin zirve noktası. Araçtaki fiziksel olayların G29'un motorlarına aktarılarak gerçekçi simülasyon hissinin yaratılması.
+## 📍 PHASE 2: Bidirectional Time-Division Telemetry (TDM)
+The system should not only receive commands, but also transmit physical vehicle telemetry back to the S3 / G29 wheel.
 
-> [!todo] Araştırma Konusu
-> Logitech G29'un USB FFB Report Descriptor'larının (hangi baytın ne kadar tork veya titreşim ürettiğinin) tersine mühendislikle (Reverse Engineering) çözülmesi veya açık kaynak kütüphanelerden (örneğin Linux hid-logitech-wheel sürücülerinden) port edilmesi gerekiyor.
+> [!danger] RF Packet Collision Prevention
+> If the S3 transmits 50 packets per second while the C3 simultaneously broadcasts asynchronously, Wi-Fi collisions (`ESP_ERR_ESPNOW_NO_MEM`) degrade throughput. Uncoordinated transmissions must be avoided.
 
-- [ ] **USB HID Çıkış (OUT) Raporlarının Yönetimi**
-  - [ ] S3 üzerinde USB Host sürücüsüne FFB raporlarını gönderecek modül yazılacak.
-- [ ] **Fizik Motoru (S3 Tarafı)**
-  - [ ] Araçtan (C3'ten) gelen Yaw ivmesi ve RPM verilerine göre direksiyona ters tork (Self-aligning torque) uygulayacak matematiksel model yazılacak.
-  - [ ] *Gecikme Optimizasyonu:* Aracın kayması ile direksiyondaki tepki süresi 15ms'nin altında tutulacak.
+- [ ] **TDM (Time-Division Multiplexing) Architecture**
+  - [ ] Synchronize C3 telemetry transmission exclusively in response to incoming S3 packets (via RX callback event flag) as an ACK reply.
+- [ ] **On-Board Sensor Telemetry (C3 Side)**
+  - [ ] ADC voltage sensing for 2S LiPo battery monitoring (using precision voltage divider network).
+  - [ ] Gyro slip angle and yaw acceleration packaged into telemetry stream.
+- [ ] **Driver Feedback (S3 Side)**
+  - [ ] Alert driver via G29 RPM LEDs or buzzer when battery voltage falls below threshold.
+
+---
+
+## 📍 PHASE 3: G29 Force Feedback (FFB) Integration
+The pinnacle of sim-to-reality immersion: translating physical chassis forces and yaw acceleration directly into G29 dual-motor force feedback.
+
+- [x] **USB HID Output Report Management**
+  - [x] Native G29 HID command packets for range, autocenter spring, mechanical friction, and constant force.
+- [x] **Simulated Physics Engine (S3 Side)**
+  - [x] Real-time vehicle speed estimation, caster self-aligning torque, high-speed understeer scrub, and throttle-sensitive friction softening.
+- [ ] **Sensor-Driven Closed-Loop FFB**
+  - [ ] Closed-loop counter-steer torque driven by on-car IMU yaw velocity with <15ms end-to-end response latency.
 

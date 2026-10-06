@@ -13,13 +13,15 @@
 #include "g29_processor.h"
 #include "esp_now_sender.h"
 
-#include "led_ui_on_s3.h"
+#include "s3_status_led.h"
 #include "led_ui_on_g29.h"
+#include "config_control.h"
+#include "simulated_ffb.h"
 
 static const char *TAG = "MAIN_APP";
 
 // ==========================================
-// FREERTOS OBJELERİ VE STATE DURUMLARI
+// FREERTOS OBJECTS AND SYSTEM STATES
 // ==========================================
 volatile s3_logic_state_t current_system_state = STATE_USB_SETUP;
 
@@ -41,19 +43,19 @@ const int64_t INACTIVITY_TIMEOUT_US = INACTIVITY_TIMEOUT_us;
 static uint8_t global_packet_counter = 0;
 
 // ==========================================
-// YARDIMCI FONKSİYONLAR
+// HELPER FUNCTIONS
 // ==========================================
 
 void sleep_timer_callback(TimerHandle_t xTimer) {
-    ESP_LOGW(TAG, "30 Saniye Hareketsizlik! Uyku moduna geçiliyor...");
+    ESP_LOGW(TAG, "30 seconds inactivity! Entering sleep mode...");
     current_system_state = STATE_SLEEP; 
 }
 
 // -------------------------------------------------------------
-// 1. G29 GİRDİ (INPUT) CALLBACK
+// 1. G29 INPUT CALLBACK
 // -------------------------------------------------------------
 void on_g29_input_received(const uint8_t *data, int len) {
-    if(g29_is_ready() && (current_system_state == STATE_SYS_ACTIVE || current_system_state == STATE_SLEEP)){
+    if(g29_is_ready() && (current_system_state == STATE_SYS_ACTIVE || current_system_state == STATE_DEV_MODE || current_system_state == STATE_SLEEP)){
         
         g29_telemetry_t temp_telemetry;
         g29_process_raw_data(data, len, &temp_telemetry);
@@ -68,12 +70,12 @@ void on_g29_input_received(const uint8_t *data, int len) {
 }
 
 // -------------------------------------------------------------
-// 2. G29 DURUM (STATE) CALLBACK 
+// 2. G29 STATE CALLBACK 
 // -------------------------------------------------------------
 void on_g29_state_changed(g29_state_t state) {
     switch (state) {
         case G29_STATE_DISCONNECTED:
-            if (current_system_state == STATE_SYS_ACTIVE) {
+            if (current_system_state == STATE_SYS_ACTIVE || current_system_state == STATE_DEV_MODE) {
                 current_system_state = STATE_USB_DISCONNECTED;
             }
             break;
@@ -83,48 +85,27 @@ void on_g29_state_changed(g29_state_t state) {
             break;
             
         case G29_STATE_NATIVE_READY:
-            g29_disable_autocenter();
             g29_set_range(540);
+            simulated_ffb_init();
             current_system_state = STATE_SYS_ACTIVE;
             break;
     }
 }
 
-// -------------------------------------------------------------
-// ESP-NOW GÖNDERİCİ TASK (Core 1) - G29 Aktif Olana Kadar Bekler
-// -------------------------------------------------------------
-void ESPNOW_Task(void *pvParameters) {
-    car_drive_packet_t packet_to_send;
-    
-    ESP_LOGI(TAG, "ESPNOW_Task Beklemede...");
-
-    // SİSTEM AKTİF OLANA KADAR RADROYU BAŞLATMA
-    // Yani kullanıcı G29'u takıp system_state == STATE_SYS_ACTIVE olana kadar burada kilitli kalır.
-    while (current_system_state != STATE_SYS_ACTIVE) {
-        vTaskDelay(pdMS_TO_TICKS(100));
-    }
-
-    ESP_LOGI(TAG, "G29 Aktif Oldu! ESP-NOW Kuruluyor...");
-    init_esp_now_sender();
-
-    while(1) {
-        if (xQueueReceive(espnow_tx_queue, &packet_to_send, portMAX_DELAY) == pdTRUE) {
-            send_telemetry_to_car(&packet_to_send);
-        }
-    }
-}
 
 // -------------------------------------------------------------
-// 3. ANA DAĞITICI TASK (Logic Task - Core 1)
+// 3. MAIN DISPATCHER TASK (Logic Task - Core 1)
 // -------------------------------------------------------------
 void Logic_Task(void *pvParameters) {
     g29_telemetry_t incoming_telemetry;
     static g29_telemetry_t last_telemetry = {0};
-
-    current_system_state = STATE_USB_WAITING; 
     
-    // Uykuya geçişte veya hata durumunda tek seferlik komut yollamak için bayrak
+    current_system_state = STATE_USB_WAITING; 
     bool sleep_command_sent = false;
+    bool esp_now_started = false; // ESP-NOW initialization guard
+    bool car_needs_wakeup = true;
+
+
     TickType_t xLastWakeTime = xTaskGetTickCount();
     const TickType_t xFrequency = pdMS_TO_TICKS(20);
 
@@ -138,17 +119,64 @@ void Logic_Task(void *pvParameters) {
                 break;
 
             case STATE_SYS_ACTIVE:
+            case STATE_DEV_MODE:
+                // Initialize ESP-NOW on first active transition
+                if (!esp_now_started) {
+                    ESP_LOGI(TAG, "G29 became active! Initializing ESP-NOW...");
+                    init_esp_now_sender();
+                    esp_now_started = true;
+
+                    // Send initial configuration packet to C3
+                    espnow_tx_item_t init_cfg_item;
+                    memset(&init_cfg_item, 0, sizeof(espnow_tx_item_t));
+                    init_cfg_item.length = sizeof(car_config_packet_t);
+                    init_cfg_item.payload.config = *config_control_get_active_config();
+                    xQueueSend(espnow_tx_queue, &init_cfg_item, 0);
+                    ESP_LOGI(TAG, "Initial Config packet sent to car.");
+                }
+
+                if (car_needs_wakeup) {
+                    espnow_tx_item_t wake_item;
+                    memset(&wake_item, 0, sizeof(espnow_tx_item_t));
+                    wake_item.length = sizeof(car_command_packet_t);
+                    wake_item.payload.command.packet_type = PKT_TYPE_COMMAND;
+                    wake_item.payload.command.command_id  = CMD_WAKE_UP;
+                    wake_item.payload.command.parameter   = 0;
+
+                    xQueueSend(espnow_tx_queue, &wake_item, 0);
+                    car_needs_wakeup = false; // Awakened, clear flag
+                    ESP_LOGI(TAG, "Sent WAKE_UP command to car (Failsafe/Sleep exit).");
+                }
+
+                // Vehicle reconnected or powered on (Auto-Reconnect):
+                if (esp_now_sender_check_and_clear_reconnected()) {
+                    ESP_LOGI(TAG, ">>> CAR ONLINE! (Connection established) - Sending Config and Wake-up <<<");
+
+                    // 1. Send wake-up command
+                    espnow_tx_item_t wake_item;
+                    memset(&wake_item, 0, sizeof(espnow_tx_item_t));
+                    wake_item.length = sizeof(car_command_packet_t);
+                    wake_item.payload.command.packet_type = PKT_TYPE_COMMAND;
+                    wake_item.payload.command.command_id  = CMD_WAKE_UP;
+                    wake_item.payload.command.parameter   = 0;
+                    xQueueSend(espnow_tx_queue, &wake_item, 0);
+
+                    // 2. Send current active configuration packet
+                    espnow_tx_item_t cfg_item;
+                    memset(&cfg_item, 0, sizeof(espnow_tx_item_t));
+                    cfg_item.length = sizeof(car_config_packet_t);
+                    cfg_item.payload.config = *config_control_get_active_config();
+                    xQueueSend(espnow_tx_queue, &cfg_item, 0);
+                }
+
                 sleep_command_sent = false;
                 bool new_data = false;
 
-                // 1. SADECE OKUMA (Bekleme süresi 0!)
-                // Kuyrukta yeni veri varsa alıp last_telemetry'yi günceller. Yoksa anında alt satıra geçer.
                 while (xQueueReceive(g29_input_queue, &incoming_telemetry, 0) == pdTRUE) {
                     last_telemetry = incoming_telemetry;
                     new_data = true;
                 }
 
-                // Yeni veri geldiyse uyku timer'ını sıfırla ve UI'yi güncelle
                 if (new_data) {
                     xTimerReset(sleep_timer, 0); 
                     if(xSemaphoreTake(ui_data_mutex, 0) == pdTRUE) { 
@@ -157,78 +185,103 @@ void Logic_Task(void *pvParameters) {
                     }
                 }
 
-                // ---------------------------------------------------------
-                // 2. SÜREKLİ GÖNDERME BÖLÜMÜ (İf bloğunun DIŞINDA!)
-                // Yeni veri gelse de gelmese de BURASI KESİN ÇALIŞIR.
-                // ---------------------------------------------------------
-                car_drive_packet_t drive_packet;
+                // --- 1. DEV MODE & CONFIG PROCESSING (G29 BUTTONS & LED UI) ---
+                car_config_packet_t updated_config;
+                if (config_control_process(&last_telemetry, &updated_config)) {
+                    espnow_tx_item_t cfg_item;
+                    memset(&cfg_item, 0, sizeof(espnow_tx_item_t));
+                    cfg_item.length = sizeof(car_config_packet_t);
+                    cfg_item.payload.config = updated_config;
+                    if (xQueueSend(espnow_tx_queue, &cfg_item, 0) == pdTRUE) {
+                        ESP_LOGI(TAG, "Updated config packet enqueued to ESP-NOW (Size: %d)", cfg_item.length);
+                    }
+                }
+
+                // --- 2. THROTTLE LED SYNCHRONIZATION IN DRIVING MODE ---
+                if (current_system_state == STATE_SYS_ACTIVE) {
+                    g29_led_ui_update_throttle(last_telemetry.throttle);
+                }
+
+                // --- 3. DYNAMIC SIMULATED FFB UPDATE ---
+                simulated_ffb_update(&last_telemetry);
+
+                // --- 4. CONTINUOUS DRIVE PACKET DISPATCH ---
+                espnow_tx_item_t tx_item;
+                memset(&tx_item, 0, sizeof(espnow_tx_item_t)); // Zero initialize
+                tx_item.length = sizeof(car_drive_packet_t);
                 
-                // En son bilinen direksiyon/pedal durumunu pakete dönüştür
-                g29_create_drive_packet(&last_telemetry, &drive_packet);
-                drive_packet.packet_id = global_packet_counter++;
+                // Populate drive packet from telemetry
+                g29_create_drive_packet(&last_telemetry, &tx_item.payload.drive);
+                tx_item.payload.drive.packet_type = PKT_TYPE_DRIVE; 
+                tx_item.payload.drive.packet_id = global_packet_counter++;
 
-                // Paketi gönderici task'ın kuyruğuna at
-                if (xQueueSend(espnow_tx_queue, &drive_packet, 0) != pdTRUE) {
-                    //ESP_LOGE(TAG, "SIRA DOLU! ESP-NOW göndericisi yetişemiyor.");
+                if (xQueueSend(espnow_tx_queue, &tx_item, 0) != pdTRUE) {
+                    // Queue full dropped item
                 }
 
-                // Log yazdırma (Saniyede 1 kez)
                 if (LOG_WHEELSTATE){
-                    ESP_LOGI("TELEMETRY", "Str: %d | Thr: %d | Packet ID: %u",  
-                        drive_packet.steering, 
-                        drive_packet.throttle, 
-                        drive_packet.packet_id
-                    );
+                    ESP_LOGI("TELEMETRY", "Str: %d | Thr: %d | ID: %u",  
+                        tx_item.payload.drive.steering, 
+                        tx_item.payload.drive.throttle, 
+                        tx_item.payload.drive.packet_id);
                 }
 
-                // 3. KESİN 50HZ KİLİDİ
-                // Döngünün başından itibaren tam 20ms dolana kadar görev uyur.
-                // G29'dan veri gelmese bile 20ms sonra uyanıp tekrar yollar.
                 vTaskDelayUntil(&xLastWakeTime, xFrequency);
                 break;
 
             case STATE_SLEEP:
-                // 1. Uykuya ilk kez girildiyse arabaya "UYKUYA GEÇ" komutu fırlat
                 if (!sleep_command_sent) {
-                    car_command_packet_t cmd_packet = {
-                        .packet_type = PKT_TYPE_COMMAND,
-                        .command_id  = CMD_SLEEP_ENTER,
-                        .parameter   = 0
-                    };
-                    // Arabaya acil komut paketini gönder
-                    xQueueSend(espnow_tx_queue, &cmd_packet, 0);
+                    espnow_tx_item_t cmd_item;
+                    memset(&cmd_item, 0, sizeof(espnow_tx_item_t));
+                    cmd_item.length = sizeof(car_command_packet_t);
+                    cmd_item.payload.command.packet_type = PKT_TYPE_COMMAND;
+                    cmd_item.payload.command.command_id  = CMD_SLEEP_ENTER;
+                    cmd_item.payload.command.parameter   = 0;
+
+                    xQueueSend(espnow_tx_queue, &cmd_item, 0);
                     sleep_command_sent = true;
-                    ESP_LOGW(TAG, "Araca UYKU Komutu (CMD_SLEEP_ENTER) Gönderildi.");
+                    simulated_ffb_set_enabled(false); // Free motors (energy saving)
+                    g29_led_ui_clear();
+                    g29_led_ui_reset_throttle_cache();
+                    ESP_LOGW(TAG, "Sent SLEEP command to car.");
                 }
 
-                // Direksiyondan girdi gelirse uyan
                 if (xQueueReceive(g29_input_queue, &incoming_telemetry, pdMS_TO_TICKS(100)) == pdTRUE) {
-                    ESP_LOGI(TAG, "Araca UYANMA Komutu (CMD_WAKE_UP) Gönderildi.");
+                    ESP_LOGI(TAG, "Sent WAKE-UP command to car.");
                     
-                    // Arabaya "UYAN" komutu fırlat
-                    car_command_packet_t wake_packet = {
-                        .packet_type = PKT_TYPE_COMMAND,
-                        .command_id  = CMD_WAKE_UP,
-                        .parameter   = 0
-                    };
-                    xQueueSend(espnow_tx_queue, &wake_packet, 0);
+                    espnow_tx_item_t wake_item;
+                    memset(&wake_item, 0, sizeof(espnow_tx_item_t));
+                    wake_item.length = sizeof(car_command_packet_t);
+                    wake_item.payload.command.packet_type = PKT_TYPE_COMMAND;
+                    wake_item.payload.command.command_id  = CMD_WAKE_UP;
+                    wake_item.payload.command.parameter   = 0;
 
+                    xQueueSend(espnow_tx_queue, &wake_item, 0);
+                    simulated_ffb_init(); // Re-initialize FFB with parked profile
+                    g29_led_ui_reset_throttle_cache();
                     current_system_state = STATE_SYS_ACTIVE;
                 }
                 break;
-
+            
             case STATE_USB_DISCONNECTED:
-                ESP_LOGE(TAG, "USB BAĞLANTISI KOPTU! Acil Failsafe Tetikleniyor...");
+                ESP_LOGE(TAG, "USB DISCONNECTED! Triggering emergency failsafe...");
+                simulated_ffb_reset();
+                g29_led_ui_clear();
+                g29_led_ui_reset_throttle_cache();
                 
-                // USB koptuğu an arabaya FAILSAFE (Acil Durdurma) komutu fırlat
-                car_command_packet_t failsafe_packet = {
-                    .packet_type = PKT_TYPE_COMMAND,
-                    .command_id  = CMD_FAILSAFE_STOP,
-                    .parameter   = 0
-                };
-                xQueueSend(espnow_tx_queue, &failsafe_packet, 0);
+                espnow_tx_item_t fail_item;
+                memset(&fail_item, 0, sizeof(espnow_tx_item_t));
+                fail_item.length = sizeof(car_command_packet_t);
+                fail_item.payload.command.packet_type = PKT_TYPE_COMMAND;
+                fail_item.payload.command.command_id  = CMD_FAILSAFE_STOP;
+                fail_item.payload.command.parameter   = 0;
 
+                xQueueSend(espnow_tx_queue, &fail_item, 0);
                 xQueueReset(g29_input_queue);
+
+                xTimerStop(sleep_timer, 0);
+
+                car_needs_wakeup = true;
                 current_system_state = STATE_USB_WAITING;
                 break;
                 
@@ -238,36 +291,27 @@ void Logic_Task(void *pvParameters) {
         }
     }
 }
-
 void app_main(void) {
-    ESP_LOGI(TAG, "Sistem Başlatılıyor...");
+    ESP_LOGI(TAG, "System initializing...");
+    init_s3_status_led();
 
     System_Events = xEventGroupCreate();
     g29_input_queue = xQueueCreate(10, sizeof(g29_telemetry_t));
     ui_data_mutex = xSemaphoreCreateMutex();
     car_feedback_mutex = xSemaphoreCreateMutex();
 
-    // Kuyruk boyutunu komut paketlerini de barındırabilecek boyutta ayarlıyoruz
-    // (car_command_packet_t ve car_drive_packet_t union veya ortak boyut kullanabilir, 
-    // en büyük struct olan car_drive_packet_t baz alınır)
-    espnow_tx_queue = xQueueCreate(10, sizeof(car_drive_packet_t)); 
+    // Queue holds union packet type
+    espnow_tx_queue = xQueueCreate(10, sizeof(espnow_tx_item_t)); 
     
     sleep_timer = xTimerCreate("Sleep_Timer", pdMS_TO_TICKS(INACTIVITY_TIMEOUT_US / 1000), pdFALSE, (void *)0, sleep_timer_callback);
 
-    if(System_Events == NULL || g29_input_queue == NULL || espnow_tx_queue == NULL || sleep_timer == NULL) {
-        ESP_LOGE(TAG, "Kritik Hata: RTOS Objeleri Yaratılamadı!");
-        return;
-    }
+    config_control_init();
 
+    // Logic_Task handles inputs and dispatches packets
     xTaskCreatePinnedToCore(Logic_Task, "Logic_Task", 8192, NULL, 4, NULL, OTHER_TASK_CORE);
-    xTaskCreatePinnedToCore(ESPNOW_Task, "ESPNOW_Task", 4096, NULL, 3, NULL, OTHER_TASK_CORE);
-
-    extern void LED_UI_Task(void *pvParameters);
-    xTaskCreatePinnedToCore(LED_UI_Task, "LED_Task", 2048, NULL, 2, NULL, OTHER_TASK_CORE);
+    
 
     if (g29_init(on_g29_state_changed, on_g29_input_received) == ESP_OK) {
-        ESP_LOGI(TAG, "USB Sürücüsü Başarıyla Kuruldu. USB Bekleniyor...");
-    } else {
-        ESP_LOGE(TAG, "USB Sürücüsü Başlatılamadı!");
+        ESP_LOGI(TAG, "USB driver initialized successfully. Waiting for device...");
     }
 }
