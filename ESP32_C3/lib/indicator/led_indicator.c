@@ -3,18 +3,16 @@
 #include "driver/gpio.h"
 #include "led_indicator.h"
 
-
 #define STATE_WAITING  1
 #define STATE_ACTIVE   2
 #define STATE_FAILSAFE 3
 #define STATE_SLEEP    4
 
-
-// main.c dosyasındaki global değişkeni referans alıyoruz
+// Reference global system state from main.c
 extern volatile int current_state;
 
 static void led_blink_task(void *pvParameters) {
-    // GPIO Kurulumu
+    // GPIO Configuration
     gpio_reset_pin(BUILTIN_LED_PIN);
     gpio_set_direction(BUILTIN_LED_PIN, GPIO_MODE_OUTPUT);
 
@@ -22,7 +20,7 @@ static void led_blink_task(void *pvParameters) {
         switch (current_state) {
             
             case STATE_WAITING:
-                // Yavaş Yan/Sön (1 saniye döngü)
+                // Slow blink (1-second cycle: 500ms ON, 500ms OFF)
                 gpio_set_level(BUILTIN_LED_PIN, 0);
                 vTaskDelay(pdMS_TO_TICKS(500));
                 gpio_set_level(BUILTIN_LED_PIN, 1);
@@ -30,7 +28,7 @@ static void led_blink_task(void *pvParameters) {
                 break;
                 
             case STATE_ACTIVE:
-                // Kalp Atışı: Çift kısa pırpır, ardından uzun bekleme
+                // Heartbeat: Double short pulse followed by pause
                 gpio_set_level(BUILTIN_LED_PIN, 0);
                 vTaskDelay(pdMS_TO_TICKS(100));
                 gpio_set_level(BUILTIN_LED_PIN, 1);
@@ -40,11 +38,11 @@ static void led_blink_task(void *pvParameters) {
                 vTaskDelay(pdMS_TO_TICKS(100));
                 gpio_set_level(BUILTIN_LED_PIN, 1);
                 
-                vTaskDelay(pdMS_TO_TICKS(1700)); // 1.7 saniye bekle
+                vTaskDelay(pdMS_TO_TICKS(1700)); // Wait 1.7s
                 break;
 
             case STATE_FAILSAFE:
-                // Hızlı Flaşör (Tehlike Alarmı)
+                // Rapid strobe (Failsafe alarm)
                 gpio_set_level(BUILTIN_LED_PIN, 0);
                 vTaskDelay(pdMS_TO_TICKS(100));
                 gpio_set_level(BUILTIN_LED_PIN, 1);
@@ -52,7 +50,7 @@ static void led_blink_task(void *pvParameters) {
                 break;
 
             case STATE_SLEEP:
-                // Uyku: Çoğunlukla kapalı, 3 saniyede bir çok kısa bir pırıltı
+                // Sleep: Mostly off, brief 50ms blip every 3 seconds
                 gpio_set_level(BUILTIN_LED_PIN, 0);
                 vTaskDelay(pdMS_TO_TICKS(50));
                 gpio_set_level(BUILTIN_LED_PIN, 1);
@@ -67,6 +65,6 @@ static void led_blink_task(void *pvParameters) {
 }
 
 void init_led_indicator(void) {
-    // LED Task'ını arka planda çalışmak üzere başlatıyoruz (Öncelik: 1 - Düşük)
+    // Start LED indicator task in background (Priority: 1 - Low)
     xTaskCreate(led_blink_task, "led_task", 2048, NULL, 1, NULL);
 }

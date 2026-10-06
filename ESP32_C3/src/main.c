@@ -15,8 +15,8 @@
 #define STATE_FAILSAFE 3
 #define STATE_SLEEP    4
 
-// BAĞLANTI KOPMA SÜRESİ (Milisaniye)
-// 500ms boyunca S3'ten paket gelmezse araç otomatik durur.
+// CONNECTION TIMEOUT (Milliseconds)
+// If no packet is received from S3 for 500ms, vehicle failsafes automatically.
 #define CONNECTION_TIMEOUT_MS 500 
 
 volatile int current_state = STATE_WAITING; 
@@ -26,7 +26,7 @@ void app_main(void) {
 
     init_esp_now_receiver();
     init_pwm();
-    init_config_with_nvs(); // Kayıtlı ayarları NVS'ten yükle (veya varsayılanları ata)
+    init_config_with_nvs(); // Load stored configuration from NVS (or assign defaults)
     
     init_led_indicator();
     
@@ -34,24 +34,24 @@ void app_main(void) {
     car_command_packet_t current_command;
     car_config_packet_t  current_config;
 
-    // NVS Aşınma Koruması (Debounce ve Dirty kontrolü)
+    // NVS Flash Wear Protection (Debounce and Dirty flag)
     bool config_dirty = false;
     TickType_t last_config_rx_time = 0;
 
-    // Son paket alınma zamanını tutacak değişken
+    // Timestamp of last received packet
     TickType_t last_packet_time = xTaskGetTickCount();
 
     while (1) {
         
         // ==========================================
-        // A. KOMUT (COMMAND) KONTROLÜ
+        // A. COMMAND PACKET PROCESSING
         // ==========================================
         if (esp_now_get_command_data(&current_command)) {
-            last_packet_time = xTaskGetTickCount(); // Sinyal geldi, zamanlayıcıyı sıfırla
+            last_packet_time = xTaskGetTickCount(); // Reset watchdog timer on packet arrival
 
             switch (current_command.command_id) {
                 case CMD_CONFIG_SAVE:
-                    printf("[SİSTEM] KOMUT ALINDI: Dev Mode'dan cikildi, ayarlar NVS'e kaydediliyor...\n");
+                    printf("[SYSTEM] COMMAND RECEIVED: Dev Mode exited, saving settings to NVS...\n");
                     if (config_dirty) {
                         save_config_to_nvs(get_current_config());
                         config_dirty = false;
@@ -60,19 +60,19 @@ void app_main(void) {
 
                 case CMD_WAKE_UP:
                     current_state = STATE_ACTIVE;
-                    printf("[SİSTEM] KOMUT ALINDI: UYAN! Arac Aktif.\n");
+                    printf("[SYSTEM] COMMAND RECEIVED: WAKE UP! Vehicle Active.\n");
                     break;
                     
                 case CMD_SLEEP_ENTER:
                     current_state = STATE_SLEEP;
-                    printf("[SİSTEM] KOMUT ALINDI: UYKU MODU. Motorlar Durduruluyor.\n");
+                    printf("[SYSTEM] COMMAND RECEIVED: SLEEP MODE. Neutralizing actuators.\n");
                     set_steering_us(1500);
                     set_throttle_us(1500);
                     break;
                     
                 case CMD_FAILSAFE_STOP:
                     current_state = STATE_FAILSAFE;
-                    printf("[SİSTEM] ACİL DURUM! USB Koptu, Arac Kilitlendi.\n");
+                    printf("[SYSTEM] EMERGENCY! USB Disconnected, Vehicle Locked.\n");
                     set_steering_us(1500); 
                     set_throttle_us(1500); 
                     break;
@@ -80,36 +80,36 @@ void app_main(void) {
         }
 
         // ==========================================
-        // B. AYAR (CONFIG) KONTROLÜ (Sadece RAM'e anında uygular, Flash'a yazmaz)
+        // B. CONFIGURATION PACKET PROCESSING (Applies to RAM instantly, no flash latency)
         // ==========================================
         if (esp_now_get_config_data(&current_config)) {
-            last_packet_time = xTaskGetTickCount(); // Sinyal geldi, zamanlayıcıyı sıfırla
-            update_pwm_config(&current_config);     // Ayarları anında PWM motor/servo sistemine uygula (0 gecikme)
+            last_packet_time = xTaskGetTickCount(); // Reset watchdog timer on packet arrival
+            update_pwm_config(&current_config);     // Apply parameters to PWM system instantly (zero latency)
             config_dirty = true;
             last_config_rx_time = xTaskGetTickCount();
-            printf("[SİSTEM] YENI AYARLAR RAM'E UYGULANDI (Flash beklemede)!\n");
+            printf("[SYSTEM] NEW CONFIGURATION APPLIED TO RAM (Flash pending)!\n");
         }
 
-        // 5 saniyelik hareketsizlik sonrası otomatik NVS kaydı (Dev Mode'dan çıkılmadan kapatılma güvencesi)
+        // Auto-save to NVS after 5s inactivity (safeguard against power-down during Dev Mode)
         if (config_dirty && ((xTaskGetTickCount() - last_config_rx_time) > pdMS_TO_TICKS(5000))) {
-            printf("[NVS] 5 sn hareketsizlik sonrasi ayarlar guvenle NVS'e yaziliyor...\n");
+            printf("[NVS] Auto-saving settings to NVS after 5s inactivity...\n");
             save_config_to_nvs(get_current_config());
             config_dirty = false;
         }
 
         // ==========================================
-        // C. SÜRÜŞ (DRIVE) VERİSİ KONTROLÜ
+        // C. DRIVE TELEMETRY PROCESSING
         // ==========================================
         bool drive_data_received = esp_now_get_latest_data(&current_telemetry);
         
         if (drive_data_received) {
-            last_packet_time = xTaskGetTickCount(); // Sinyal geldi, zamanlayıcıyı sıfırla
+            last_packet_time = xTaskGetTickCount(); // Reset watchdog timer on packet arrival
             
-            // Eğer araç beklemedeyse (STATE_WAITING) veya menzil dışından dönüp Failsafe'e düştüyse
-            // paket almaya başladığı anda OTOMATİK uyan ve aktif moda geç!
+            // If vehicle is in STATE_WAITING or recovering from failsafe,
+            // automatically switch to ACTIVE state upon receiving valid drive packets!
             if (current_state == STATE_WAITING || current_state == STATE_FAILSAFE) {
                 current_state = STATE_ACTIVE;
-                printf("[SİSTEM] Paket Alindi! Arac Otomatik Aktif Moduna Gecti.\n");
+                printf("[SYSTEM] Packet Received! Vehicle Automatically Switched to Active Mode.\n");
             }
 
             if (current_state == STATE_ACTIVE) {
@@ -127,19 +127,19 @@ void app_main(void) {
         }
 
         // ==========================================
-        // D. BAĞLANTI KOPMA (WATCHDOG/TIMEOUT) KONTROLÜ
+        // D. CONNECTION TIMEOUT (WATCHDOG) MONITORING
         // ==========================================
-        // Sadece araç aktifken bağlantı kopmasını dert ederiz. Uyurken kopması önemli değil.
+        // Only monitor link loss during active driving state.
         if (current_state == STATE_ACTIVE) {
             TickType_t current_time = xTaskGetTickCount();
             uint32_t elapsed_time_ms = (current_time - last_packet_time) * portTICK_PERIOD_MS;
 
             if (elapsed_time_ms > CONNECTION_TIMEOUT_MS) {
-                current_state = STATE_FAILSAFE; // Aracı kilitle
-                set_steering_us(1500);          // Direksiyonu düzle
-                set_throttle_us(1500);          // Gazı kes
-                printf("\n[SİSTEM - HATA] %lu ms BOYUNCA SİNYAL ALINAMADI!\n", elapsed_time_ms);
-                printf("[SİSTEM] MENZİL DIŞI VEYA S3 KAPANDI. OTOMATİK FAILSAFE AKTİF!\n\n");
+                current_state = STATE_FAILSAFE; // Lock vehicle into failsafe
+                set_steering_us(1500);          // Neutralize steering
+                set_throttle_us(1500);          // Cut throttle
+                printf("\n[SYSTEM - ERROR] NO SIGNAL FOR %lu ms!\n", elapsed_time_ms);
+                printf("[SYSTEM] OUT OF RANGE OR S3 POWERED OFF. AUTOMATIC FAILSAFE ENGAGED!\n\n");
             }
         }
 

@@ -11,46 +11,46 @@ extern "C" {
 #endif
 
 /**
- * @brief Simüle edilmiş Force Feedback (FFB) sistemini başlatır.
- *        Park modu profilini (hafif sert sürtünme ve nazik merkezleme) direksiyona uygular.
+ * @brief Initializes the simulated Force Feedback (FFB) subsystem.
+ *        Applies parked mode profile (subtle friction and gentle autocentering) to the steering wheel.
  */
 void simulated_ffb_init(void);
 
 /**
- * @brief Direksiyon ve pedal telemetrisini işleyerek dinamik araç fizik simülasyonunu günceller.
- *        Hız tahmini, viraj kaster merkezleme torku, önden kayma (understeer) ve fren yük transferini
- *        hesaplayıp G29'a non-blocking olarak aktarır.
- *        Logic_Task döngüsünde periyodik olarak çağrılmalıdır.
- * @param telemetry G29'dan okunan güncel telemetri verisi
+ * @brief Updates dynamic vehicle physics simulation from steering and pedal telemetry.
+ *        Computes estimated speed, cornering caster self-aligning torque, understeer scrub, and braking load transfer,
+ *        non-blockingly transmitting parameters to G29.
+ *        Must be invoked periodically inside Logic_Task loop.
+ * @param telemetry Current telemetry packet from G29
  */
 void simulated_ffb_update(const g29_telemetry_t *telemetry);
 
 /**
- * @brief FFB sistemini etkinleştirir veya devre dışı bırakır.
- *        Uyku modunda veya acil durumlarda motor akımını kesmek için false verilir.
- * @param enabled true: aktif simülasyon, false: motorlar serbest
+ * @brief Enables or disables the simulated FFB subsystem.
+ *        Pass false during sleep mode or emergency stops to cut motor current.
+ * @param enabled true: active simulation, false: motors free
  */
 void simulated_ffb_set_enabled(bool enabled);
 
 /**
- * @brief FFB simülasyonunun anlık açık/kapalı durumunu döner.
+ * @brief Returns current state of FFB simulation.
  */
 bool simulated_ffb_is_enabled(void);
 
 /**
- * @brief FFB simülasyonunu açıp kapatır (Açıksa kapatır, kapalıysa açar).
- * @return Yeni durum (true: aktif, false: kapalı/serbest)
+ * @brief Toggles FFB simulation on/off.
+ * @return New state (true: enabled, false: disabled/free)
  */
 bool simulated_ffb_toggle(void);
 
 /**
- * @brief Tahmini araç hızını ve simülasyon durumunu sıfırlar.
- *        Araç değişiminde, uykudan uyanmada veya failsafe anında park durumuna döndürür.
+ * @brief Resets estimated speed and simulation states.
+ *        Reverts to parked state upon vehicle switch, wake-up, or failsafe.
  */
 void simulated_ffb_reset(void);
 
 /**
- * @brief Anlık simüle edilen araç hızını döner (0.0f durmuş, 1.0f tam hız).
+ * @brief Returns current estimated vehicle speed (0.0f = stopped, 1.0f = full speed).
  */
 float simulated_ffb_get_estimated_speed(void);
 

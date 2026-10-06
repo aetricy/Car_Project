@@ -8,66 +8,65 @@
 extern volatile s3_logic_state_t current_system_state;
 static led_strip_handle_t led_strip;
 
-// Kütüphaneye doğrudan sinyal yollayan fonksiyon (G ve B donanımsal ters çevrilmiş)
+// Direct LED drive function
 static void set_led_raw(uint32_t r, uint32_t g, uint32_t b) {
     led_strip_set_pixel(led_strip, 0, r, g, b);
     led_strip_refresh(led_strip);
 }
 
-// LED'i tamamen kapatan fonksiyon
+// Turn off LED completely
 static void clear_led() {
     led_strip_set_pixel(led_strip, 0, 0, 0, 0);
     led_strip_refresh(led_strip);
 }
 static void s3_led_blink_task(void *pvParameters) {
-    // İlk açılışta eski durumu "Bilinmeyen" (-1) yapıyoruz ki döngüye girince hemen rengi güncellesin
+    // Initialize last state to -1 to trigger immediate color update upon entry
     s3_logic_state_t last_state = (s3_logic_state_t)-1; 
 
     while (1) {
         s3_logic_state_t current = current_system_state;
 
         // ==============================================================
-        // SADECE DURUM DEĞİŞTİĞİNDE LED'İ GÜNCELLE (SIFIR CPU YÜKÜ)
+        // ONLY UPDATE LED WHEN SYSTEM STATE CHANGES (ZERO CPU OVERHEAD)
         // ==============================================================
         if (current != last_state) {
             
             switch (current) {
                 case STATE_USB_SETUP:
                 case STATE_USB_WAITING:
-                    set_led_raw(0, 0, 15);  // SABİT MAVİ
+                    set_led_raw(0, 0, 15);  // SOLID BLUE
                     break;
 
                 case STATE_USB_ENUMERATING:
-                    set_led_raw(15, 15, 0); // SABİT SARI
+                    set_led_raw(15, 15, 0); // SOLID YELLOW
                     break;
                     
                 case STATE_SYS_ACTIVE:
-                    set_led_raw(0, 15, 0);  // SABİT YEŞİL (Araba kullanımdayken RMT hiç çalışmaz)
+                    set_led_raw(0, 15, 0);  // SOLID GREEN (During active drive, RMT remains idle)
                     break;
 
                 case STATE_USB_DISCONNECTED:
-                    set_led_raw(15, 0, 0);  // SABİT KIRMIZI
+                    set_led_raw(15, 0, 0);  // SOLID RED
                     break;
 
                 case STATE_SLEEP:
-                    set_led_raw(10, 0, 15); // SABİT MOR
+                    set_led_raw(10, 0, 15); // SOLID PURPLE
                     break;
 
                 case STATE_DEV_MODE:
-                    set_led_raw(0, 15, 15); // SABİT TURKUAZ / CYAN (Dev Mod)
+                    set_led_raw(0, 15, 15); // SOLID CYAN (Dev Mode)
                     break;
                     
                 default:
-                    set_led_raw(0, 0, 0);   // KAPALI
+                    set_led_raw(0, 0, 0);   // OFF
                     break;
             }
             
-            // Yeni durumu kaydet ki bir daha aynı rengi tekrar tekrar yollamasın
+            // Save new state so identical color is not re-transmitted
             last_state = current;
         }
 
-        // Görev sadece 200ms'de bir uyanıp duruma bakar. 
-        // Eğer durum aynıysa hiçbir şey yapmadan tekrar uyur.
+        // Task polls state every 200ms. If state is unchanged, it returns to sleep.
         vTaskDelay(pdMS_TO_TICKS(200));
     }
 }

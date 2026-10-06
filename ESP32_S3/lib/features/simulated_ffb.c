@@ -23,7 +23,7 @@ void simulated_ffb_init(void) {
             g29_set_friction_raw(0);
             g29_disable_autocenter();
         }
-        ESP_LOGI(TAG, "FFB Simulasyonu Kapali (Direksiyon Serbest Modda).");
+        ESP_LOGI(TAG, "Simulated FFB Disabled (Wheel Free Mode).");
         return;
     }
 
@@ -35,7 +35,7 @@ void simulated_ffb_init(void) {
     s_last_update_us = esp_timer_get_time();
     s_last_send_us = s_last_update_us;
 
-    // Park halindeki başlangıç değerleri
+    // Parked initial parameters
     uint8_t s_val = (uint8_t)(FFB_PARKED_STRENGTH * 15.0f + 0.5f);
     uint8_t r_val = (uint8_t)(FFB_PARKED_RATE * 255.0f + 0.5f);
     uint8_t f_val = (uint8_t)(FFB_PARKED_FRICTION * 7.0f + 0.5f);
@@ -47,7 +47,7 @@ void simulated_ffb_init(void) {
     s_current_r_val = r_val;
     s_current_f_val = f_val;
 
-    ESP_LOGI(TAG, "Simule FFB Baslatildi (Park Hali: Guc=%d/15, Egim=%d/255, Surtunme=%d/7)", s_val, r_val, f_val);
+    ESP_LOGI(TAG, "Simulated FFB Initialized (Parked State: Strength=%d/15, Rate=%d/255, Friction=%d/7)", s_val, r_val, f_val);
 }
 
 void simulated_ffb_set_enabled(bool enabled) {
@@ -55,13 +55,13 @@ void simulated_ffb_set_enabled(bool enabled) {
     if (!g29_is_ready()) return;
 
     if (!enabled) {
-        // Uyku modunda veya kapatıldığında motor akımını ve kuvvetlerini kes
+        // Disable motor forces and friction when sleeping or turned off
         g29_set_friction_raw(0);
         g29_disable_autocenter();
         s_current_s_val = 0xFF;
         s_current_r_val = 0xFF;
         s_current_f_val = 0xFF;
-        ESP_LOGI(TAG, "FFB Devre Disi Birakildi (Motorlar Serbest).");
+        ESP_LOGI(TAG, "Simulated FFB Deactivated (Motors Free).");
     } else {
         simulated_ffb_init();
     }
@@ -113,7 +113,7 @@ void simulated_ffb_update(const g29_telemetry_t *telemetry) {
     s_last_update_us = now;
 
     if (dt <= 0.001f || dt > 0.2f) {
-        dt = 0.02f; // Emniyet filtresi (20ms)
+        dt = 0.02f; // Safety clamp filter (20ms)
     }
 
     float throttle  = telemetry->throttle;
@@ -122,24 +122,24 @@ void simulated_ffb_update(const g29_telemetry_t *telemetry) {
     float abs_steer = fabsf(steering);
 
     // =========================================================================
-    // 1. TAHMİNİ ARAÇ HIZI SİMÜLASYONU
+    // 1. ESTIMATED VEHICLE SPEED SIMULATION
     // =========================================================================
     if (throttle > 0.05f) {
-        // Hızlanma: Tam gazda yaklaşık 1.25 saniyede maksimum hıza yaklaşır
+        // Acceleration: Reaches near top speed in ~1.25s at full throttle
         float accel = 0.80f * throttle;
         float drag  = 0.30f * s_estimated_speed * s_estimated_speed;
         s_estimated_speed += (accel - drag) * dt;
     } else if (brake > 0.05f) {
-        // Fren: Güçlü frenleme (yaklaşık 0.45 saniyede duruş)
+        // Braking: High deceleration (stops in ~0.45s)
         float decel = 2.20f * brake;
         s_estimated_speed -= decel * dt;
     } else {
-        // Boş süzülme: Mekanik direnç ve yuvarlanma sürtünmesi aracı yavaşlatır
+        // Coasting: Mechanical rolling resistance and drag decelerate vehicle
         float coast_drag = 0.45f * s_estimated_speed + 0.08f;
         s_estimated_speed -= coast_drag * dt;
     }
 
-    // Hız sınırlandırma [0.0, 1.0]
+    // Clamp speed [0.0, 1.0]
     if (s_estimated_speed < 0.01f) {
         s_estimated_speed = 0.0f;
     } else if (s_estimated_speed > 1.0f) {
@@ -147,19 +147,18 @@ void simulated_ffb_update(const g29_telemetry_t *telemetry) {
     }
 
     // =========================================================================
-    // 2. MEKANİK SÜRTÜNME (AĞIRLIK / DİRENÇ)
-    //    - Park halinde (hız=0) direksiyon hafif oturaklıdır.
-    //    - Gaza basıldığı anda ve araç hareket ettiğinde sürtünme sıfırlanır,
-    //      direksiyon yumuşacık ve rahatça döner.
+    // 2. MECHANICAL FRICTION (STEERING WEIGHT / RESISTANCE)
+    //    - When parked (speed=0), wheel offers moderate baseline resistance.
+    //    - As throttle is pressed or vehicle moves, friction drops to zero for light, fluid steering.
     // =========================================================================
     float drive_factor = s_estimated_speed;
     if (throttle > drive_factor) {
-        drive_factor = throttle; // Gaza basıldığı anda beklemeden anında yumuşasın!
+        drive_factor = throttle; // Soften immediately on throttle input without waiting for speed buildup!
     }
 
     float target_friction = FFB_PARKED_FRICTION * (1.0f - drive_factor);
 
-    // Frenleme anında ön aksa binen yük (ağırlık transferi) direksiyonu hafif sertleştirir
+    // Weight transfer during braking adds front axle load, slightly firming the steering
     if (brake > 0.1f) {
         target_friction += 0.08f * brake;
     }
@@ -168,20 +167,20 @@ void simulated_ffb_update(const g29_telemetry_t *telemetry) {
     if (target_friction > FFB_MAX_FRICTION) target_friction = FFB_MAX_FRICTION;
 
     // =========================================================================
-    // 3. MERKEZLEME GÜCÜ VE HIZI (CASTER YAY ETKİSİ / SELF-ALIGNING TORQUE)
-    //    - Dönüşlerde ve hızlandıkça kaster açısı direksiyonu tatlı ve kolay bir şekilde merkeze çeker.
+    // 3. SELF-ALIGNING TORQUE & CASTER SPRING EFFECT
+    //    - As speed increases, caster angle smoothly returns wheel to center after corners.
     // =========================================================================
     float target_strength = FFB_PARKED_STRENGTH + (FFB_MAX_STRENGTH - FFB_PARKED_STRENGTH) * s_estimated_speed;
     float target_rate     = FFB_PARKED_RATE + (FFB_MAX_RATE - FFB_PARKED_RATE) * s_estimated_speed;
 
-    // Virajda önden kayma (Understeer) simülasyonu:
-    // Yüksek hızda direksiyon çok fazla kırıldığında ön lastik tutunması azalır, merkezleme yay direnci hafifçe yumuşar
+    // Cornering understeer scrub simulation:
+    // When excessive steering lock is applied at speed, tire grip fades, softening centering resistance
     if (s_estimated_speed > 0.50f && abs_steer > 0.75f) {
         float scrub_factor = (abs_steer - 0.75f) / 0.25f; // 0.0 - 1.0
         target_strength *= (1.0f - 0.20f * scrub_factor);
     }
 
-    // Frenleme sırasında kaster tutunması ve direnç hafifçe belirginleşir
+    // Braking reinforces front axle grip, slightly increasing centering torque
     if (brake > 0.1f) {
         target_strength += 0.05f * brake;
     }
@@ -190,15 +189,15 @@ void simulated_ffb_update(const g29_telemetry_t *telemetry) {
     if (target_rate > 1.0f) target_rate = 1.0f;
 
     // =========================================================================
-    // 4. DONANIMSAL KADEMELERE DÖNÜŞTÜRME VE NON-BLOCKING AKILLI USB GÖNDERİMİ
+    // 4. HARDWARE SCALING & NON-BLOCKING USB DISPATCH
     // =========================================================================
     uint8_t s_val = (uint8_t)(target_strength * 15.0f + 0.5f);
     uint8_t r_val = (uint8_t)(target_rate * 255.0f + 0.5f);
     uint8_t f_val = (uint8_t)(target_friction * 7.0f + 0.5f);
 
-    bool heartbeat = (now - s_last_send_us) > 500000; // 500ms heartbeat senkronizasyonu
+    bool heartbeat = (now - s_last_send_us) > 500000; // 500ms heartbeat synchronization
 
-    // Yalnızca donanım kademesi değiştiğinde veya 500ms geçtiğinde USB paketi gönder
+    // Only dispatch USB report when hardware steps change or heartbeat interval expires
     if (heartbeat || s_val != s_current_s_val || abs((int)r_val - (int)s_current_r_val) > 4) {
         g29_set_autocenter_raw(s_val, r_val);
         s_current_s_val = s_val;
