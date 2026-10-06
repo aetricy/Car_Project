@@ -365,5 +365,5 @@ bool g29_init(g29_state_callback_t state_cb, g29_input_callback_t input_cb) {
 
     xTaskCreatePinnedToCore(client_task, "usb_client", 4096, NULL, 5, NULL, USB_TASK_CORE);
     
-    return false;
+    return true;
 }

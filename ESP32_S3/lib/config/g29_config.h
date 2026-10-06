@@ -90,4 +90,14 @@ typedef struct {
     } payload;
 } espnow_tx_item_t;
 
+// ==========================================
+// 5. CAR RECEIVER SYSTEM STATES
+// ==========================================
+typedef enum {
+    CAR_STATE_WAITING  = 1,
+    CAR_STATE_ACTIVE   = 2,
+    CAR_STATE_FAILSAFE = 3,
+    CAR_STATE_SLEEP    = 4
+} car_state_t;
+
 #endif

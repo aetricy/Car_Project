@@ -3,7 +3,6 @@
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
 #include "freertos/queue.h"
-#include "freertos/event_groups.h"
 #include "freertos/timers.h"
 #include "esp_log.h"
 #include "esp_timer.h"
@@ -24,15 +23,6 @@ static const char *TAG = "MAIN_APP";
 // FREERTOS OBJECTS AND SYSTEM STATES
 // ==========================================
 volatile s3_logic_state_t current_system_state = STATE_USB_SETUP;
-
-EventGroupHandle_t System_Events;
-#define EVT_G29_CONNECTED    (1 << 0)
-#define EVT_SLEEP_ACTIVE     (1 << 2)
-
-SemaphoreHandle_t ui_data_mutex;
-g29_telemetry_t   ui_shared_telemetry;
-
-SemaphoreHandle_t car_feedback_mutex;
 
 QueueHandle_t g29_input_queue;
 QueueHandle_t espnow_tx_queue; 
@@ -55,17 +45,10 @@ void sleep_timer_callback(TimerHandle_t xTimer) {
 // 1. G29 INPUT CALLBACK
 // -------------------------------------------------------------
 void on_g29_input_received(const uint8_t *data, int len) {
-    if(g29_is_ready() && (current_system_state == STATE_SYS_ACTIVE || current_system_state == STATE_DEV_MODE || current_system_state == STATE_SLEEP)){
-        
+    if (g29_is_ready() && (current_system_state == STATE_SYS_ACTIVE || current_system_state == STATE_DEV_MODE || current_system_state == STATE_SLEEP)) {
         g29_telemetry_t temp_telemetry;
         g29_process_raw_data(data, len, &temp_telemetry);
-         
-        BaseType_t xHigherPriorityTaskWoken = pdFALSE;
-        xQueueSendFromISR(g29_input_queue, &temp_telemetry, &xHigherPriorityTaskWoken);
-
-        if (xHigherPriorityTaskWoken) {
-            portYIELD_FROM_ISR();
-        }
+        xQueueSend(g29_input_queue, &temp_telemetry, 0);
     }
 }
 
@@ -179,10 +162,6 @@ void Logic_Task(void *pvParameters) {
 
                 if (new_data) {
                     xTimerReset(sleep_timer, 0); 
-                    if(xSemaphoreTake(ui_data_mutex, 0) == pdTRUE) { 
-                        ui_shared_telemetry = last_telemetry;
-                        xSemaphoreGive(ui_data_mutex);
-                    }
                 }
 
                 // --- 1. DEV MODE & CONFIG PROCESSING (G29 BUTTONS & LED UI) ---
@@ -295,12 +274,7 @@ void app_main(void) {
     ESP_LOGI(TAG, "System initializing...");
     init_s3_status_led();
 
-    System_Events = xEventGroupCreate();
     g29_input_queue = xQueueCreate(10, sizeof(g29_telemetry_t));
-    ui_data_mutex = xSemaphoreCreateMutex();
-    car_feedback_mutex = xSemaphoreCreateMutex();
-
-    // Queue holds union packet type
     espnow_tx_queue = xQueueCreate(10, sizeof(espnow_tx_item_t)); 
     
     sleep_timer = xTimerCreate("Sleep_Timer", pdMS_TO_TICKS(INACTIVITY_TIMEOUT_US / 1000), pdFALSE, (void *)0, sleep_timer_callback);
@@ -309,9 +283,10 @@ void app_main(void) {
 
     // Logic_Task handles inputs and dispatches packets
     xTaskCreatePinnedToCore(Logic_Task, "Logic_Task", 8192, NULL, 4, NULL, OTHER_TASK_CORE);
-    
 
-    if (g29_init(on_g29_state_changed, on_g29_input_received) == ESP_OK) {
+    if (g29_init(on_g29_state_changed, on_g29_input_received)) {
         ESP_LOGI(TAG, "USB driver initialized successfully. Waiting for device...");
+    } else {
+        ESP_LOGE(TAG, "Failed to initialize USB host driver!");
     }
 }

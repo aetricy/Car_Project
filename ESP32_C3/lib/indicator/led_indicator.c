@@ -1,15 +1,11 @@
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
 #include "driver/gpio.h"
+#include "g29_config.h"
 #include "led_indicator.h"
 
-#define STATE_WAITING  1
-#define STATE_ACTIVE   2
-#define STATE_FAILSAFE 3
-#define STATE_SLEEP    4
-
 // Reference global system state from main.c
-extern volatile int current_state;
+extern volatile car_state_t current_state;
 
 static void led_blink_task(void *pvParameters) {
     // GPIO Configuration
@@ -19,7 +15,7 @@ static void led_blink_task(void *pvParameters) {
     while (1) {
         switch (current_state) {
             
-            case STATE_WAITING:
+            case CAR_STATE_WAITING:
                 // Slow blink (1-second cycle: 500ms ON, 500ms OFF)
                 gpio_set_level(BUILTIN_LED_PIN, 0);
                 vTaskDelay(pdMS_TO_TICKS(500));
@@ -27,7 +23,7 @@ static void led_blink_task(void *pvParameters) {
                 vTaskDelay(pdMS_TO_TICKS(500));
                 break;
                 
-            case STATE_ACTIVE:
+            case CAR_STATE_ACTIVE:
                 // Heartbeat: Double short pulse followed by pause
                 gpio_set_level(BUILTIN_LED_PIN, 0);
                 vTaskDelay(pdMS_TO_TICKS(100));
@@ -41,7 +37,7 @@ static void led_blink_task(void *pvParameters) {
                 vTaskDelay(pdMS_TO_TICKS(1700)); // Wait 1.7s
                 break;
 
-            case STATE_FAILSAFE:
+            case CAR_STATE_FAILSAFE:
                 // Rapid strobe (Failsafe alarm)
                 gpio_set_level(BUILTIN_LED_PIN, 0);
                 vTaskDelay(pdMS_TO_TICKS(100));
@@ -49,7 +45,7 @@ static void led_blink_task(void *pvParameters) {
                 vTaskDelay(pdMS_TO_TICKS(100));
                 break;
 
-            case STATE_SLEEP:
+            case CAR_STATE_SLEEP:
                 // Sleep: Mostly off, brief 50ms blip every 3 seconds
                 gpio_set_level(BUILTIN_LED_PIN, 0);
                 vTaskDelay(pdMS_TO_TICKS(50));

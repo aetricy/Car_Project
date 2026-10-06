@@ -115,6 +115,9 @@ void init_esp_now_sender(void) {
 bool esp_now_sender_set_active_car(uint8_t car_id) {
     if (car_id >= CAR_MAX_COUNT) return false;
 
+    uint8_t old_mac[6];
+    memcpy(old_mac, target_car_mac, 6);
+
     s_active_car_id = car_id;
     memcpy(target_car_mac, CAR_MAC_TABLE[car_id], 6);
 
@@ -123,9 +126,9 @@ bool esp_now_sender_set_active_car(uint8_t car_id) {
         return true;
     }
 
-    // Delete existing peer if present
-    if (esp_now_is_peer_exist(target_car_mac)) {
-        esp_now_del_peer(target_car_mac);
+    // Delete previous peer if present
+    if (esp_now_is_peer_exist(old_mac)) {
+        esp_now_del_peer(old_mac);
     }
 
     bool is_zero = true;

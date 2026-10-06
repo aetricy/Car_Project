@@ -10,16 +10,11 @@
 
 #define LOG_MODE 1
 
-#define STATE_WAITING  1
-#define STATE_ACTIVE   2
-#define STATE_FAILSAFE 3
-#define STATE_SLEEP    4
-
 // CONNECTION TIMEOUT (Milliseconds)
 // If no packet is received from S3 for 500ms, vehicle failsafes automatically.
 #define CONNECTION_TIMEOUT_MS 500 
 
-volatile int current_state = STATE_WAITING; 
+volatile car_state_t current_state = CAR_STATE_WAITING; 
 
 void app_main(void) {
     vTaskDelay(pdMS_TO_TICKS(1000));
@@ -59,19 +54,19 @@ void app_main(void) {
                     break;
 
                 case CMD_WAKE_UP:
-                    current_state = STATE_ACTIVE;
+                    current_state = CAR_STATE_ACTIVE;
                     printf("[SYSTEM] COMMAND RECEIVED: WAKE UP! Vehicle Active.\n");
                     break;
                     
                 case CMD_SLEEP_ENTER:
-                    current_state = STATE_SLEEP;
+                    current_state = CAR_STATE_SLEEP;
                     printf("[SYSTEM] COMMAND RECEIVED: SLEEP MODE. Neutralizing actuators.\n");
                     set_steering_us(1500);
                     set_throttle_us(1500);
                     break;
                     
                 case CMD_FAILSAFE_STOP:
-                    current_state = STATE_FAILSAFE;
+                    current_state = CAR_STATE_FAILSAFE;
                     printf("[SYSTEM] EMERGENCY! USB Disconnected, Vehicle Locked.\n");
                     set_steering_us(1500); 
                     set_throttle_us(1500); 
@@ -105,14 +100,14 @@ void app_main(void) {
         if (drive_data_received) {
             last_packet_time = xTaskGetTickCount(); // Reset watchdog timer on packet arrival
             
-            // If vehicle is in STATE_WAITING or recovering from failsafe,
+            // If vehicle is in CAR_STATE_WAITING or recovering from failsafe,
             // automatically switch to ACTIVE state upon receiving valid drive packets!
-            if (current_state == STATE_WAITING || current_state == STATE_FAILSAFE) {
-                current_state = STATE_ACTIVE;
+            if (current_state == CAR_STATE_WAITING || current_state == CAR_STATE_FAILSAFE) {
+                current_state = CAR_STATE_ACTIVE;
                 printf("[SYSTEM] Packet Received! Vehicle Automatically Switched to Active Mode.\n");
             }
 
-            if (current_state == STATE_ACTIVE) {
+            if (current_state == CAR_STATE_ACTIVE) {
                 uint16_t steering_pwm = apply_config_to_pwm(current_telemetry.steering, true);
                 uint16_t throttle_pwm = apply_config_to_pwm(current_telemetry.throttle, false);
                 
@@ -130,12 +125,12 @@ void app_main(void) {
         // D. CONNECTION TIMEOUT (WATCHDOG) MONITORING
         // ==========================================
         // Only monitor link loss during active driving state.
-        if (current_state == STATE_ACTIVE) {
+        if (current_state == CAR_STATE_ACTIVE) {
             TickType_t current_time = xTaskGetTickCount();
             uint32_t elapsed_time_ms = (current_time - last_packet_time) * portTICK_PERIOD_MS;
 
             if (elapsed_time_ms > CONNECTION_TIMEOUT_MS) {
-                current_state = STATE_FAILSAFE; // Lock vehicle into failsafe
+                current_state = CAR_STATE_FAILSAFE; // Lock vehicle into failsafe
                 set_steering_us(1500);          // Neutralize steering
                 set_throttle_us(1500);          // Cut throttle
                 printf("\n[SYSTEM - ERROR] NO SIGNAL FOR %lu ms!\n", elapsed_time_ms);

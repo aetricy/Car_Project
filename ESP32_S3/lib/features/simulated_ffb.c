@@ -110,10 +110,13 @@ void simulated_ffb_update(const g29_telemetry_t *telemetry) {
     }
 
     float dt = (float)(now - s_last_update_us) / 1000000.0f;
+    if (dt < 0.001f) {
+        return; // Called too rapidly (<1ms), skip cycle to avoid numerical integration instability
+    }
     s_last_update_us = now;
 
-    if (dt <= 0.001f || dt > 0.2f) {
-        dt = 0.02f; // Safety clamp filter (20ms)
+    if (dt > 0.1f) {
+        dt = 0.02f; // Safety clamp against long task stalls
     }
 
     float throttle  = telemetry->throttle;
