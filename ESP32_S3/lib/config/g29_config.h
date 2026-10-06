@@ -23,6 +23,7 @@
 // --- SİSTEM KOMUTLARI (COMMAND ID) ---
 #define CMD_SLEEP_ENTER     0x10  // S3 uykuya geçti, C3 de uykuya geçsin
 #define CMD_WAKE_UP         0x11  // S3 uyandı, C3 de uyanık moda geçsin
+#define CMD_CONFIG_SAVE     0x12  // Dev Mode'dan çıkıldı, ayarları NVS'e hemen kaydet
 #define CMD_FAILSAFE_STOP   0xEE  // Acil Durdurma (Kablo koptu / S3 kapandı)
 
 // ==========================================

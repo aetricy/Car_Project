@@ -44,5 +44,15 @@ bool config_control_process(const g29_telemetry_t *telemetry, car_config_packet_
  */
 const car_config_packet_t* config_control_get_active_config(void);
 
+/**
+ * @brief Aktif konfigürasyonu S3 NVS'ine kaydeder (memcmp korumalı).
+ */
+bool config_control_save_to_nvs(void);
+
+/**
+ * @brief S3 NVS'inden kayıtlı konfigürasyonu yükler.
+ */
+bool config_control_load_from_nvs(void);
+
 #endif // CONFIG_CONTROL_H
 

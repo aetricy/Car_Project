@@ -24,15 +24,19 @@ volatile int current_state = STATE_WAITING;
 void app_main(void) {
     vTaskDelay(pdMS_TO_TICKS(1000));
 
-    init_default_config();
-    init_pwm();
     init_esp_now_receiver();
+    init_pwm();
+    init_config_with_nvs(); // Kayıtlı ayarları NVS'ten yükle (veya varsayılanları ata)
     
     init_led_indicator();
     
     car_drive_packet_t   current_telemetry;
     car_command_packet_t current_command;
     car_config_packet_t  current_config;
+
+    // NVS Aşınma Koruması (Debounce ve Dirty kontrolü)
+    bool config_dirty = false;
+    TickType_t last_config_rx_time = 0;
 
     // Son paket alınma zamanını tutacak değişken
     TickType_t last_packet_time = xTaskGetTickCount();
@@ -46,6 +50,14 @@ void app_main(void) {
             last_packet_time = xTaskGetTickCount(); // Sinyal geldi, zamanlayıcıyı sıfırla
 
             switch (current_command.command_id) {
+                case CMD_CONFIG_SAVE:
+                    printf("[SİSTEM] KOMUT ALINDI: Dev Mode'dan cikildi, ayarlar NVS'e kaydediliyor...\n");
+                    if (config_dirty) {
+                        save_config_to_nvs(get_current_config());
+                        config_dirty = false;
+                    }
+                    break;
+
                 case CMD_WAKE_UP:
                     current_state = STATE_ACTIVE;
                     printf("[SİSTEM] KOMUT ALINDI: UYAN! Arac Aktif.\n");
@@ -68,12 +80,21 @@ void app_main(void) {
         }
 
         // ==========================================
-        // B. AYAR (CONFIG) KONTROLÜ
+        // B. AYAR (CONFIG) KONTROLÜ (Sadece RAM'e anında uygular, Flash'a yazmaz)
         // ==========================================
         if (esp_now_get_config_data(&current_config)) {
             last_packet_time = xTaskGetTickCount(); // Sinyal geldi, zamanlayıcıyı sıfırla
-            update_pwm_config(&current_config);     // Ayarları anında PWM motor/servo sistemine uygula
-            printf("[SİSTEM] YENI AYARLAR ALINDI VE UYGULANDI!\n");
+            update_pwm_config(&current_config);     // Ayarları anında PWM motor/servo sistemine uygula (0 gecikme)
+            config_dirty = true;
+            last_config_rx_time = xTaskGetTickCount();
+            printf("[SİSTEM] YENI AYARLAR RAM'E UYGULANDI (Flash beklemede)!\n");
+        }
+
+        // 5 saniyelik hareketsizlik sonrası otomatik NVS kaydı (Dev Mode'dan çıkılmadan kapatılma güvencesi)
+        if (config_dirty && ((xTaskGetTickCount() - last_config_rx_time) > pdMS_TO_TICKS(5000))) {
+            printf("[NVS] 5 sn hareketsizlik sonrasi ayarlar guvenle NVS'e yaziliyor...\n");
+            save_config_to_nvs(get_current_config());
+            config_dirty = false;
         }
 
         // ==========================================

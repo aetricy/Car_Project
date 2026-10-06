@@ -5,8 +5,14 @@
 #include "esp_log.h"
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
+#include "freertos/queue.h"
+#include "nvs_flash.h"
+#include "nvs.h"
 
 static const char *TAG = "DEV_CONFIG";
+
+#define NVS_NAMESPACE_S3_CFG "s3_cfg_ns"
+#define NVS_KEY_S3_CFG       "active_cfg"
 
 // Aktif ayar verisi
 static car_config_packet_t g_active_config;
@@ -14,6 +20,10 @@ static car_config_packet_t g_active_config;
 // Dev Mode Durumu
 static bool s_dev_mode_active = false;
 static cfg_menu_t s_current_menu = CFG_MENU_ST_EPA;
+
+// NVS Aşınma Koruması Değişkenleri
+static bool s_config_dirty = false;
+static TickType_t s_last_config_change_tick = 0;
 
 // Zamanlayıcılar ve Tuş Durumları
 static TickType_t s_value_display_until = 0;
@@ -24,32 +34,129 @@ static uint32_t s_enter_hold_ticks = 0;
 static bool s_enter_latched = false;
 
 extern volatile s3_logic_state_t current_system_state;
+extern QueueHandle_t espnow_tx_queue;
+
+static void send_save_cmd_to_car(void) {
+    if (espnow_tx_queue != NULL) {
+        espnow_tx_item_t cmd_item;
+        memset(&cmd_item, 0, sizeof(espnow_tx_item_t));
+        cmd_item.length = sizeof(car_command_packet_t);
+        cmd_item.payload.command.packet_type = PKT_TYPE_COMMAND;
+        cmd_item.payload.command.command_id  = CMD_CONFIG_SAVE;
+        cmd_item.payload.command.parameter   = 0;
+        xQueueSend(espnow_tx_queue, &cmd_item, 0);
+        ESP_LOGI(TAG, "Araca CMD_CONFIG_SAVE komutu gonderildi.");
+    }
+}
+
+static bool is_config_valid(const car_config_packet_t *cfg) {
+    if (!cfg) return false;
+    if (cfg->st_epa_left < 20 || cfg->st_epa_left > 100) return false;
+    if (cfg->st_epa_right < 20 || cfg->st_epa_right > 100) return false;
+    if (cfg->st_curve > 2) return false;
+    if (cfg->st_sub_trim < -50 || cfg->st_sub_trim > 50) return false;
+    if (cfg->th_epa_forward < 20 || cfg->th_epa_forward > 100) return false;
+    if (cfg->th_epa_backward < 20 || cfg->th_epa_backward > 100) return false;
+    if (cfg->th_curve > 2) return false;
+    if (cfg->th_sub_trim < -50 || cfg->th_sub_trim > 50) return false;
+    if (cfg->st_gyro_gain < 0 || cfg->st_gyro_gain > 100) return false;
+    return true;
+}
+
+bool config_control_save_to_nvs(void) {
+    nvs_handle_t handle;
+    esp_err_t err = nvs_open(NVS_NAMESPACE_S3_CFG, NVS_READWRITE, &handle);
+    if (err != ESP_OK) {
+        ESP_LOGE(TAG, "S3 NVS acilamadi: %s", esp_err_to_name(err));
+        return false;
+    }
+
+    // Flash yıpranmasını önlemek için: Mevcut kayıtlı veriyi oku ve karşılaştır
+    car_config_packet_t existing_cfg;
+    size_t req_len = sizeof(car_config_packet_t);
+    err = nvs_get_blob(handle, NVS_KEY_S3_CFG, &existing_cfg, &req_len);
+    if (err == ESP_OK && req_len == sizeof(car_config_packet_t)) {
+        if (memcmp(&existing_cfg, &g_active_config, sizeof(car_config_packet_t)) == 0) {
+            nvs_close(handle);
+            ESP_LOGI(TAG, "S3 NVS: Veriler ayni, flash yazimi atlandi (Omur korundu).");
+            return true;
+        }
+    }
+
+    err = nvs_set_blob(handle, NVS_KEY_S3_CFG, &g_active_config, sizeof(car_config_packet_t));
+    if (err == ESP_OK) {
+        err = nvs_commit(handle);
+        if (err == ESP_OK) {
+            ESP_LOGI(TAG, "S3 NVS: Guncel ayarlar basariyla Flash NVS'e yazildi ve commit edildi.");
+        } else {
+            ESP_LOGE(TAG, "S3 NVS commit hatasi: %s", esp_err_to_name(err));
+        }
+    } else {
+        ESP_LOGE(TAG, "S3 NVS set_blob hatasi: %s", esp_err_to_name(err));
+    }
+
+    nvs_close(handle);
+    return (err == ESP_OK);
+}
+
+bool config_control_load_from_nvs(void) {
+    nvs_handle_t handle;
+    esp_err_t err = nvs_open(NVS_NAMESPACE_S3_CFG, NVS_READONLY, &handle);
+    if (err != ESP_OK) {
+        return false;
+    }
+
+    car_config_packet_t loaded;
+    size_t req_len = sizeof(car_config_packet_t);
+    err = nvs_get_blob(handle, NVS_KEY_S3_CFG, &loaded, &req_len);
+    nvs_close(handle);
+
+    if (err == ESP_OK && req_len == sizeof(car_config_packet_t) && is_config_valid(&loaded)) {
+        memcpy(&g_active_config, &loaded, sizeof(car_config_packet_t));
+        return true;
+    }
+
+    return false;
+}
 
 void config_control_init(void) {
-    g_active_config.packet_type     = PKT_TYPE_CONFIG;
-    g_active_config.st_gyro_gain    = 50; // Varsayilan %50 Gain (1500us)
-    
-    // Direksiyon Varsayılanları
-    g_active_config.st_sub_trim     = 0;
-    g_active_config.st_epa_left     = 100;
-    g_active_config.st_epa_right    = 100;
-    g_active_config.st_reverse      = false;
-    g_active_config.st_curve        = 0; // 0: Lineer
-    
-    // Gaz Varsayılanları
-    g_active_config.th_sub_trim     = 0;
-    g_active_config.th_epa_forward  = 100;
-    g_active_config.th_epa_backward = 100;
-    g_active_config.th_reverse      = false;
-    g_active_config.th_curve        = 0; // 0: Lineer
+    esp_err_t ret = nvs_flash_init();
+    if (ret == ESP_ERR_NVS_NO_FREE_PAGES || ret == ESP_ERR_NVS_NEW_VERSION_FOUND) {
+        nvs_flash_erase();
+        nvs_flash_init();
+    }
+
+    if (config_control_load_from_nvs()) {
+        ESP_LOGI(TAG, "S3 NVS'ten kaydedilmis ayarlar basariyla yuklendi! (EPA Sol: %d%%, Sag: %d%%, Gyro: %d%%, Trim: %d)",
+                 g_active_config.st_epa_left, g_active_config.st_epa_right, g_active_config.st_gyro_gain, g_active_config.st_sub_trim);
+    } else {
+        g_active_config.packet_type     = PKT_TYPE_CONFIG;
+        g_active_config.st_gyro_gain    = 50; // Varsayilan %50 Gain (1500us)
+        
+        // Direksiyon Varsayılanları
+        g_active_config.st_sub_trim     = 0;
+        g_active_config.st_epa_left     = 100;
+        g_active_config.st_epa_right    = 100;
+        g_active_config.st_reverse      = false;
+        g_active_config.st_curve        = 0; // 0: Lineer
+        
+        // Gaz Varsayılanları
+        g_active_config.th_sub_trim     = 0;
+        g_active_config.th_epa_forward  = 100;
+        g_active_config.th_epa_backward = 100;
+        g_active_config.th_reverse      = false;
+        g_active_config.th_curve        = 0; // 0: Lineer
+
+        config_control_save_to_nvs();
+        ESP_LOGI(TAG, "Config Yoneticisi Baslatildi (Varsayilan degerler atandi ve NVS'e kaydedildi).");
+    }
 
     s_dev_mode_active = false;
     s_current_menu = CFG_MENU_ST_EPA;
     s_value_display_until = 0;
     s_combo_hold_ticks = 0;
     s_combo_latched = false;
-
-    ESP_LOGI(TAG, "Config Yoneticisi Baslatildi (Varsayilan EPA: 100%%, Curve: 0, Gyro: 50%%).");
+    s_config_dirty = false;
 }
 
 bool config_control_is_dev_mode(void) {
@@ -69,6 +176,14 @@ void config_control_set_dev_mode(bool enable) {
     } else {
         current_system_state = STATE_SYS_ACTIVE;
         ESP_LOGW(TAG, ">>> DEV MODE KAPATILDI! Normal Surus Aktif <<<");
+        
+        // Dev Mode'dan cikildi: Eger ayarlar degistirilmisse NVS'e kaydet ve C3'e kaydet komutu yolla
+        if (s_config_dirty) {
+            config_control_save_to_nvs();
+            send_save_cmd_to_car();
+            s_config_dirty = false;
+        }
+
         g29_led_ui_exit_animation();
         g29_led_ui_clear();
     }
@@ -417,10 +532,23 @@ bool config_control_process(const g29_telemetry_t *telemetry, car_config_packet_
     // LED Göstergesini Güncelle
     update_led_display(telemetry);
 
-    // Ayar Değiştiyse Paketi Kopyala
-    if (config_changed && out_config_packet) {
-        g_active_config.packet_type = PKT_TYPE_CONFIG;
-        *out_config_packet = g_active_config;
+    // Ayar Değiştiyse Paketi Kopyala ve Dirty Bayrağını Kaldır
+    if (config_changed) {
+        s_config_dirty = true;
+        s_last_config_change_tick = xTaskGetTickCount();
+
+        if (out_config_packet) {
+            g_active_config.packet_type = PKT_TYPE_CONFIG;
+            *out_config_packet = g_active_config;
+        }
+    }
+
+    // 5 saniyelik hareketsizlik sonrası otomatik NVS kaydı (Dev Mode'dan çıkılmadan kapatılma güvencesi)
+    if (s_config_dirty && ((xTaskGetTickCount() - s_last_config_change_tick) > pdMS_TO_TICKS(5000))) {
+        ESP_LOGI(TAG, "5 sn hareketsizlik sonrasi ayarlar guvenle NVS'e kaydediliyor...");
+        config_control_save_to_nvs();
+        send_save_cmd_to_car();
+        s_config_dirty = false;
     }
 
     return config_changed;

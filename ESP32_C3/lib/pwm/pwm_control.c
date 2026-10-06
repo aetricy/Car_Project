@@ -1,5 +1,8 @@
 #include "pwm_control.h"
 #include "driver/ledc.h"
+#include "nvs_flash.h"
+#include "nvs.h"
+#include "esp_err.h"
 #include <stdio.h>
 #include <string.h>
 #include <math.h>
@@ -16,12 +19,12 @@
 #define STEERING_PWM_PIN 3
 #define THROTTLE_PWM_PIN 1
 
+// NVS İsim Alanı ve Anahtarı
+#define NVS_NAMESPACE_CAR_CFG "car_cfg_ns"
+#define NVS_KEY_CAR_CFG       "cfg_blob"
+
 // RAM Üzerindeki Aktif Ayarlar
 static car_config_packet_t current_config;
-
-// ==========================================
-// AYAR (CONFIG) VE MATEMATİK FONKSİYONLARI
-// ==========================================
 
 // RC Expo / Eğri Hesaplama Fonksiyonu
 // normalized_input: 0.0 (Merkez) ile 1.0 (Tam Açı) arası
@@ -44,6 +47,21 @@ static float apply_expo(float normalized_input, uint8_t curve_type) {
     }
 }
 
+// Ayar Doğrulama (Flash'tan bozuk/unformatted veri okunursa güvenlik kontrolü)
+static bool is_config_valid(const car_config_packet_t *cfg) {
+    if (!cfg) return false;
+    if (cfg->st_epa_left < 20 || cfg->st_epa_left > 100) return false;
+    if (cfg->st_epa_right < 20 || cfg->st_epa_right > 100) return false;
+    if (cfg->st_curve > 2) return false;
+    if (cfg->st_sub_trim < -50 || cfg->st_sub_trim > 50) return false;
+    if (cfg->th_epa_forward < 20 || cfg->th_epa_forward > 100) return false;
+    if (cfg->th_epa_backward < 20 || cfg->th_epa_backward > 100) return false;
+    if (cfg->th_curve > 2) return false;
+    if (cfg->th_sub_trim < -50 || cfg->th_sub_trim > 50) return false;
+    if (cfg->st_gyro_gain < 0 || cfg->st_gyro_gain > 100) return false;
+    return true;
+}
+
 void init_default_config(void) {
     memset(&current_config, 0, sizeof(car_config_packet_t));
     current_config.packet_type    = PKT_TYPE_CONFIG;
@@ -63,6 +81,92 @@ void init_default_config(void) {
     current_config.st_gyro_gain   = 50; // Varsayılan %50 Gyro Gain
 
     RC_PRINT("[INFO] Varsayilan RC ayarlari RAM'e yuklendi.\n");
+}
+
+bool load_config_from_nvs(car_config_packet_t *out_config) {
+    if (!out_config) return false;
+
+    nvs_handle_t handle;
+    esp_err_t err = nvs_open(NVS_NAMESPACE_CAR_CFG, NVS_READONLY, &handle);
+    if (err != ESP_OK) {
+        return false;
+    }
+
+    car_config_packet_t loaded;
+    size_t req_len = sizeof(car_config_packet_t);
+    err = nvs_get_blob(handle, NVS_KEY_CAR_CFG, &loaded, &req_len);
+    nvs_close(handle);
+
+    if (err == ESP_OK && req_len == sizeof(car_config_packet_t) && is_config_valid(&loaded)) {
+        memcpy(out_config, &loaded, sizeof(car_config_packet_t));
+        return true;
+    }
+
+    return false;
+}
+
+bool save_config_to_nvs(const car_config_packet_t *new_config) {
+    if (!new_config) return false;
+
+    nvs_handle_t handle;
+    esp_err_t err = nvs_open(NVS_NAMESPACE_CAR_CFG, NVS_READWRITE, &handle);
+    if (err != ESP_OK) {
+        RC_PRINT("[NVS HATA] NVS acilamadi: %s\n", esp_err_to_name(err));
+        return false;
+    }
+
+    // Flash yipranmasini onlemek icin: Mevcut kayitli veriyi oku ve karsilastir
+    car_config_packet_t existing_cfg;
+    size_t req_len = sizeof(car_config_packet_t);
+    err = nvs_get_blob(handle, NVS_KEY_CAR_CFG, &existing_cfg, &req_len);
+    if (err == ESP_OK && req_len == sizeof(car_config_packet_t)) {
+        if (memcmp(&existing_cfg, new_config, sizeof(car_config_packet_t)) == 0) {
+            // Veriler birebir ayni, flash yazimi yapilmaz (Wear leveling ve omur koruma)
+            nvs_close(handle);
+            RC_PRINT("[NVS] Veriler mevcut NVS ile ayni, flash yazimi atlandi (Omur korundu).\n");
+            return true;
+        }
+    }
+
+    err = nvs_set_blob(handle, NVS_KEY_CAR_CFG, new_config, sizeof(car_config_packet_t));
+    if (err == ESP_OK) {
+        err = nvs_commit(handle);
+        if (err == ESP_OK) {
+            RC_PRINT("[NVS] RC Ayarlari basariyla Flash NVS'e yazildi ve onaylandi (commit)!\n");
+        } else {
+            RC_PRINT("[NVS HATA] Commit basarisiz: %s\n", esp_err_to_name(err));
+        }
+    } else {
+        RC_PRINT("[NVS HATA] Set blob basarisiz: %s\n", esp_err_to_name(err));
+    }
+
+    nvs_close(handle);
+    return (err == ESP_OK);
+}
+
+void init_config_with_nvs(void) {
+    esp_err_t ret = nvs_flash_init();
+    if (ret == ESP_ERR_NVS_NO_FREE_PAGES || ret == ESP_ERR_NVS_NEW_VERSION_FOUND) {
+        nvs_flash_erase();
+        nvs_flash_init();
+    }
+
+    if (load_config_from_nvs(&current_config)) {
+        RC_PRINT("[NVS] Kaydedilmis arac ayarlari NVS'ten basariyla yuklendi! (EPA_L: %d%%, EPA_R: %d%%, Gyro: %d%%, Trim: %d)\n",
+                 current_config.st_epa_left, current_config.st_epa_right, current_config.st_gyro_gain, current_config.st_sub_trim);
+        // Gyro gain PWM pinini yuklenen degere gore baslat
+        uint16_t gyro_us = 1000 + ((uint16_t)current_config.st_gyro_gain * 10);
+        set_gyro_gain_us(gyro_us);
+    } else {
+        RC_PRINT("[NVS] Gecerli ayar bulunamadi, varsayilan ayarlar uygulaniyor ve NVS'e kaydediliyor.\n");
+        init_default_config();
+        save_config_to_nvs(&current_config);
+        set_gyro_gain_us(1500);
+    }
+}
+
+const car_config_packet_t* get_current_config(void) {
+    return &current_config;
 }
 
 void update_pwm_config(const car_config_packet_t *new_config) {
