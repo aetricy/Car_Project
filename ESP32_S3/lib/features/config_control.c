@@ -10,6 +10,7 @@
 #include "nvs.h"
 
 #include "esp_now_sender.h"
+#include "simulated_ffb.h"
 
 static const char *TAG = "DEV_CONFIG";
 
@@ -212,6 +213,7 @@ bool config_control_select_car(uint8_t new_car_id) {
     }
 
     ESP_LOGW(TAG, ">>> AKTİF ARAÇ DEĞİŞTİRİLDİ -> [ARAÇ %d] <<<", new_car_id + 1);
+    simulated_ffb_reset();
     return true;
 }
 
@@ -273,6 +275,7 @@ void config_control_set_dev_mode(bool enable) {
     if (s_dev_mode_active) {
         current_system_state = STATE_DEV_MODE;
         ESP_LOGW(TAG, ">>> DEV MODE AKTIF EDILDI! G29 LED ve Tus Kontrolu Basladi <<<");
+        g29_led_ui_reset_throttle_cache();
         g29_led_ui_intro_animation();
         s_current_menu = CFG_MENU_ST_EPA;
         s_value_display_until = 0;
@@ -289,6 +292,7 @@ void config_control_set_dev_mode(bool enable) {
 
         g29_led_ui_exit_animation();
         g29_led_ui_clear();
+        g29_led_ui_reset_throttle_cache();
     }
 }
 
@@ -414,8 +418,23 @@ bool config_control_process(const g29_telemetry_t *telemetry, car_config_packet_
         s_combo_latched = false;
     }
     
-    // Dev Mode Aktif Değilse Hızlı Araç Değiştirme Kontrolü
+    // Dev Mode Aktif Değilse: Hızlı Araç Değiştirme ve FFB Açma/Kapatma
     if (!s_dev_mode_active) {
+        // FFB SİMÜLASYONU CANLI AÇMA / KAPAMA: R3 Tuşuna basıldığında
+        if (pressed & BTN_R3) {
+            bool ffb_active = simulated_ffb_toggle();
+            if (ffb_active) {
+                ESP_LOGW(TAG, ">>> FFB SIMULASYONU AÇILDI! <<<");
+                g29_led_ui_set_raw(0x03); // 2 Yeşil LED (Açık Bildirimi)
+            } else {
+                ESP_LOGW(TAG, ">>> FFB SIMULASYONU KAPATILDI (DIREKSIYON SERBEST)! <<<");
+                g29_led_ui_set_raw(0x10); // 1 Kırmızı LED (Kapalı Bildirimi)
+            }
+            vTaskDelay(pdMS_TO_TICKS(180));
+            g29_led_ui_clear();
+            g29_led_ui_reset_throttle_cache();
+        }
+
         // HIZLI ARAÇ GEÇİŞİ: ENTER tuşuna (Dial ortası) basılı tutarken Dial Çevirme veya +/-
         if (current_buttons & BTN_ENTER) {
             bool next_btn = (pressed & (BTN_DIAL_RIGHT | BTN_PLUS  | BTN_DPAD_RIGHT | BTN_PADDLE_RIGHT)) != 0;
@@ -428,12 +447,14 @@ bool config_control_process(const g29_telemetry_t *telemetry, car_config_packet_
                 g29_led_ui_set_raw(1 << s_active_car_id);
                 vTaskDelay(pdMS_TO_TICKS(150));
                 g29_led_ui_clear();
+                g29_led_ui_reset_throttle_cache();
             } else if (prev_btn) {
                 uint8_t prev_id = (s_active_car_id + CAR_MAX_COUNT - 1) % CAR_MAX_COUNT;
                 config_control_select_car(prev_id);
                 g29_led_ui_set_raw(1 << s_active_car_id);
                 vTaskDelay(pdMS_TO_TICKS(150));
                 g29_led_ui_clear();
+                g29_led_ui_reset_throttle_cache();
             }
         }
         return false;
