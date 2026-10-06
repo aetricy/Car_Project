@@ -9,13 +9,20 @@
 #include "nvs_flash.h"
 #include "nvs.h"
 
+#include "esp_now_sender.h"
+
 static const char *TAG = "DEV_CONFIG";
 
 #define NVS_NAMESPACE_S3_CFG "s3_cfg_ns"
-#define NVS_KEY_S3_CFG       "active_cfg"
+#define NVS_KEY_ACTIVE_CAR   "car_id"
 
-// Aktif ayar verisi
+// Aktif ayar verisi ve aktif araç indeksi (0-4)
 static car_config_packet_t g_active_config;
+static uint8_t s_active_car_id = 0;
+
+static void get_car_cfg_key(uint8_t car_id, char *out_key) {
+    snprintf(out_key, 16, "cfg_car_%u", (unsigned int)car_id);
+}
 
 // Dev Mode Durumu
 static bool s_dev_mode_active = false;
@@ -71,28 +78,35 @@ bool config_control_save_to_nvs(void) {
         return false;
     }
 
-    // Flash yıpranmasını önlemek için: Mevcut kayıtlı veriyi oku ve karşılaştır
+    // 1. Aktif araç ID'sini kaydet
+    nvs_set_u8(handle, NVS_KEY_ACTIVE_CAR, s_active_car_id);
+
+    // 2. Bu araca ait config'i kaydet (memcmp kontrolü ile)
+    char key[16];
+    get_car_cfg_key(s_active_car_id, key);
+
     car_config_packet_t existing_cfg;
     size_t req_len = sizeof(car_config_packet_t);
-    err = nvs_get_blob(handle, NVS_KEY_S3_CFG, &existing_cfg, &req_len);
+    err = nvs_get_blob(handle, key, &existing_cfg, &req_len);
     if (err == ESP_OK && req_len == sizeof(car_config_packet_t)) {
         if (memcmp(&existing_cfg, &g_active_config, sizeof(car_config_packet_t)) == 0) {
+            nvs_commit(handle);
             nvs_close(handle);
-            ESP_LOGI(TAG, "S3 NVS: Veriler ayni, flash yazimi atlandi (Omur korundu).");
+            ESP_LOGI(TAG, "S3 NVS: [Araç %d] verileri aynı, flash yazımı atlandı.", s_active_car_id + 1);
             return true;
         }
     }
 
-    err = nvs_set_blob(handle, NVS_KEY_S3_CFG, &g_active_config, sizeof(car_config_packet_t));
+    err = nvs_set_blob(handle, key, &g_active_config, sizeof(car_config_packet_t));
     if (err == ESP_OK) {
         err = nvs_commit(handle);
         if (err == ESP_OK) {
-            ESP_LOGI(TAG, "S3 NVS: Guncel ayarlar basariyla Flash NVS'e yazildi ve commit edildi.");
+            ESP_LOGI(TAG, "S3 NVS: [Araç %d] ayarları başarıyla Flash NVS'e yazıldı.", s_active_car_id + 1);
         } else {
-            ESP_LOGE(TAG, "S3 NVS commit hatasi: %s", esp_err_to_name(err));
+            ESP_LOGE(TAG, "S3 NVS commit hatası: %s", esp_err_to_name(err));
         }
     } else {
-        ESP_LOGE(TAG, "S3 NVS set_blob hatasi: %s", esp_err_to_name(err));
+        ESP_LOGE(TAG, "S3 NVS set_blob hatası: %s", esp_err_to_name(err));
     }
 
     nvs_close(handle);
@@ -106,10 +120,25 @@ bool config_control_load_from_nvs(void) {
         return false;
     }
 
+    // 1. Kayıtlı aktif araç ID'sini oku
+    uint8_t saved_car_id = 0;
+    if (nvs_get_u8(handle, NVS_KEY_ACTIVE_CAR, &saved_car_id) == ESP_OK && saved_car_id < CAR_MAX_COUNT) {
+        s_active_car_id = saved_car_id;
+    } else {
+        s_active_car_id = 0;
+    }
+
+    // 2. Bu aracın ayarlarını oku
+    char key[16];
+    get_car_cfg_key(s_active_car_id, key);
+
     car_config_packet_t loaded;
     size_t req_len = sizeof(car_config_packet_t);
-    err = nvs_get_blob(handle, NVS_KEY_S3_CFG, &loaded, &req_len);
+    err = nvs_get_blob(handle, key, &loaded, &req_len);
     nvs_close(handle);
+
+    // Sender'a da aktif aracı bildir
+    esp_now_sender_set_active_car(s_active_car_id);
 
     if (err == ESP_OK && req_len == sizeof(car_config_packet_t) && is_config_valid(&loaded)) {
         memcpy(&g_active_config, &loaded, sizeof(car_config_packet_t));
@@ -117,6 +146,77 @@ bool config_control_load_from_nvs(void) {
     }
 
     return false;
+}
+
+bool config_control_select_car(uint8_t new_car_id) {
+    if (new_car_id >= CAR_MAX_COUNT) return false;
+    if (new_car_id == s_active_car_id) return true;
+
+    // Önceki araçta bekleyen değişiklik varsa kaydet
+    if (s_config_dirty) {
+        config_control_save_to_nvs();
+        s_config_dirty = false;
+    }
+
+    s_active_car_id = new_car_id;
+    esp_now_sender_set_active_car(new_car_id);
+
+    // Yeni aracın NVS ayarını yükle (varsa), yoksa varsayılan ata
+    nvs_handle_t handle;
+    bool loaded = false;
+    if (nvs_open(NVS_NAMESPACE_S3_CFG, NVS_READONLY, &handle) == ESP_OK) {
+        char key[16];
+        get_car_cfg_key(new_car_id, key);
+        car_config_packet_t cfg_loaded;
+        size_t len = sizeof(car_config_packet_t);
+        if (nvs_get_blob(handle, key, &cfg_loaded, &len) == ESP_OK && len == sizeof(car_config_packet_t) && is_config_valid(&cfg_loaded)) {
+            memcpy(&g_active_config, &cfg_loaded, sizeof(car_config_packet_t));
+            loaded = true;
+        }
+        nvs_close(handle);
+    }
+
+    if (!loaded) {
+        g_active_config.packet_type     = PKT_TYPE_CONFIG;
+        g_active_config.st_gyro_gain    = 50;
+        g_active_config.st_sub_trim     = 0;
+        g_active_config.st_epa_left     = 100;
+        g_active_config.st_epa_right    = 100;
+        g_active_config.st_reverse      = false;
+        g_active_config.st_curve        = 0;
+        g_active_config.th_sub_trim     = 0;
+        g_active_config.th_epa_forward  = 100;
+        g_active_config.th_epa_backward = 100;
+        g_active_config.th_reverse      = false;
+        g_active_config.th_curve        = 0;
+    }
+
+    // Seçilen aracı ve ayarlarını NVS'e sabitle
+    config_control_save_to_nvs();
+
+    // Yeni araca ayar ve uyanma paketini gönder
+    if (espnow_tx_queue != NULL) {
+        espnow_tx_item_t cfg_item;
+        memset(&cfg_item, 0, sizeof(espnow_tx_item_t));
+        cfg_item.length = sizeof(car_config_packet_t);
+        cfg_item.payload.config = g_active_config;
+        xQueueSend(espnow_tx_queue, &cfg_item, 0);
+
+        espnow_tx_item_t wake_item;
+        memset(&wake_item, 0, sizeof(espnow_tx_item_t));
+        wake_item.length = sizeof(car_command_packet_t);
+        wake_item.payload.command.packet_type = PKT_TYPE_COMMAND;
+        wake_item.payload.command.command_id  = CMD_WAKE_UP;
+        wake_item.payload.command.parameter   = 0;
+        xQueueSend(espnow_tx_queue, &wake_item, 0);
+    }
+
+    ESP_LOGW(TAG, ">>> AKTİF ARAÇ DEĞİŞTİRİLDİ -> [ARAÇ %d] <<<", new_car_id + 1);
+    return true;
+}
+
+uint8_t config_control_get_active_car_id(void) {
+    return s_active_car_id;
 }
 
 void config_control_init(void) {
@@ -127,11 +227,13 @@ void config_control_init(void) {
     }
 
     if (config_control_load_from_nvs()) {
-        ESP_LOGI(TAG, "S3 NVS'ten kaydedilmis ayarlar basariyla yuklendi! (EPA Sol: %d%%, Sag: %d%%, Gyro: %d%%, Trim: %d)",
+        ESP_LOGI(TAG, "S3 NVS'ten [Araç %d] ayarları başarıyla yüklendi! (EPA Sol: %d%%, Sağ: %d%%, Gyro: %d%%, Trim: %d)",
+                 s_active_car_id + 1,
                  g_active_config.st_epa_left, g_active_config.st_epa_right, g_active_config.st_gyro_gain, g_active_config.st_sub_trim);
     } else {
+        s_active_car_id = 0;
         g_active_config.packet_type     = PKT_TYPE_CONFIG;
-        g_active_config.st_gyro_gain    = 50; // Varsayilan %50 Gain (1500us)
+        g_active_config.st_gyro_gain    = 50; // Varsayılan %50 Gain (1500us)
         
         // Direksiyon Varsayılanları
         g_active_config.st_sub_trim     = 0;
@@ -148,7 +250,8 @@ void config_control_init(void) {
         g_active_config.th_curve        = 0; // 0: Lineer
 
         config_control_save_to_nvs();
-        ESP_LOGI(TAG, "Config Yoneticisi Baslatildi (Varsayilan degerler atandi ve NVS'e kaydedildi).");
+        esp_now_sender_set_active_car(s_active_car_id);
+        ESP_LOGI(TAG, "Config Yöneticisi Başlatıldı (Varsayılan Araç 1 ayarları atandı ve NVS'e kaydedildi).");
     }
 
     s_dev_mode_active = false;
@@ -262,6 +365,11 @@ static void update_led_display(const g29_telemetry_t *telemetry) {
                 g29_led_ui_show_bar(level);
                 break;
             }
+            case CFG_MENU_CAR_SELECT: {
+                // Seçilen aracın numarasını LED olarak göster (Araç 1: LED 1, Araç 2: LED 2 ...)
+                g29_led_ui_set_raw(1 << s_active_car_id);
+                break;
+            }
             default:
                 break;
         }
@@ -305,9 +413,29 @@ bool config_control_process(const g29_telemetry_t *telemetry, car_config_packet_
         s_combo_hold_ticks = 0;
         s_combo_latched = false;
     }
-
-    // Dev Mode Aktif Değilse Başka İşlem Yapma
+    
+    // Dev Mode Aktif Değilse Hızlı Araç Değiştirme Kontrolü
     if (!s_dev_mode_active) {
+        // HIZLI ARAÇ GEÇİŞİ: ENTER tuşuna (Dial ortası) basılı tutarken Dial Çevirme veya +/-
+        if (current_buttons & BTN_ENTER) {
+            bool next_btn = (pressed & (BTN_DIAL_RIGHT | BTN_PLUS  | BTN_DPAD_RIGHT | BTN_PADDLE_RIGHT)) != 0;
+            bool prev_btn = (pressed & (BTN_DIAL_LEFT  | BTN_MINUS | BTN_DPAD_LEFT  | BTN_PADDLE_LEFT))  != 0;
+
+            if (next_btn) {
+                uint8_t next_id = (s_active_car_id + 1) % CAR_MAX_COUNT;
+                config_control_select_car(next_id);
+                // Yeni aracın LED'ini göster
+                g29_led_ui_set_raw(1 << s_active_car_id);
+                vTaskDelay(pdMS_TO_TICKS(150));
+                g29_led_ui_clear();
+            } else if (prev_btn) {
+                uint8_t prev_id = (s_active_car_id + CAR_MAX_COUNT - 1) % CAR_MAX_COUNT;
+                config_control_select_car(prev_id);
+                g29_led_ui_set_raw(1 << s_active_car_id);
+                vTaskDelay(pdMS_TO_TICKS(150));
+                g29_led_ui_clear();
+            }
+        }
         return false;
     }
 
@@ -317,12 +445,12 @@ bool config_control_process(const g29_telemetry_t *telemetry, car_config_packet_
     if (pressed & BTN_DPAD_UP) {
         s_current_menu = (cfg_menu_t)((s_current_menu + 1) % CFG_MENU_COUNT);
         s_value_display_until = 0; // Yeni menüye geçince menü LED'ini göster
-        ESP_LOGI(TAG, "Menü Seçildi -> [%d] (1:ST_EPA, 2:ST_CURVE, 3:TH_EPA, 4:TH_CURVE, 5:TRIM, 6:GYRO)", s_current_menu + 1);
+        ESP_LOGI(TAG, "Menü Seçildi -> [%d] (1:ST_EPA, 2:ST_CURVE, 3:TH_EPA, 4:TH_CURVE, 5:TRIM, 6:GYRO, 7:CAR_SEL)", s_current_menu + 1);
     } 
     else if (pressed & BTN_DPAD_DOWN) {
         s_current_menu = (cfg_menu_t)((s_current_menu + CFG_MENU_COUNT - 1) % CFG_MENU_COUNT);
         s_value_display_until = 0;
-        ESP_LOGI(TAG, "Menü Seçildi -> [%d] (1:ST_EPA, 2:ST_CURVE, 3:TH_EPA, 4:TH_CURVE, 5:TRIM, 6:GYRO)", s_current_menu + 1);
+        ESP_LOGI(TAG, "Menü Seçildi -> [%d] (1:ST_EPA, 2:ST_CURVE, 3:TH_EPA, 4:TH_CURVE, 5:TRIM, 6:GYRO, 7:CAR_SEL)", s_current_menu + 1);
     }
 
     // ==============================================================
@@ -452,11 +580,25 @@ bool config_control_process(const g29_telemetry_t *telemetry, car_config_packet_
 
             // --- MENÜ 6: GYRO GAIN (%0 - %100, GPIO 0 PWM) ---
             case CFG_MENU_GYRO_GAIN:
-                if (inc && g_active_config.st_gyro_gain <= 95) g_active_config.st_gyro_gain += 2;
-                if (dec && g_active_config.st_gyro_gain >= 2)  g_active_config.st_gyro_gain -= 2;
+                if (inc && g_active_config.st_gyro_gain <= 95) g_active_config.st_gyro_gain += 5;
+                if (dec && g_active_config.st_gyro_gain >= 5)  g_active_config.st_gyro_gain -= 5;
                 ESP_LOGI(TAG, "GYRO GAIN: %d%% (PWM: %d us)", 
                          g_active_config.st_gyro_gain, 1000 + (g_active_config.st_gyro_gain * 10));
                 break;
+
+            // --- MENÜ 7: ARAÇ SEÇİMİ (1 - 5) ---
+            case CFG_MENU_CAR_SELECT: {
+                if (inc) {
+                    uint8_t next_id = (s_active_car_id + 1) % CAR_MAX_COUNT;
+                    config_control_select_car(next_id);
+                }
+                if (dec) {
+                    uint8_t prev_id = (s_active_car_id + CAR_MAX_COUNT - 1) % CAR_MAX_COUNT;
+                    config_control_select_car(prev_id);
+                }
+                ESP_LOGI(TAG, "SEÇİLEN ARAÇ: [Araç %d] (G29 LED %d)", s_active_car_id + 1, s_active_car_id + 1);
+                break;
+            }
 
             default:
                 break;
@@ -507,6 +649,9 @@ bool config_control_process(const g29_telemetry_t *telemetry, car_config_packet_
                         break;
                     case CFG_MENU_GYRO_GAIN:
                         g_active_config.st_gyro_gain = 50;
+                        break;
+                    case CFG_MENU_CAR_SELECT:
+                        config_control_select_car(0); // İlk araca dön
                         break;
                     default:
                         break;
