@@ -32,4 +32,17 @@ static const uint8_t CAR_MAC_TABLE[CAR_MAX_COUNT][6] = {
     {0x00, 0x00, 0x00, 0x00, 0x00, 0x00}, // Araç 5 (ID 4)
 };
 
+// ==========================================
+// SİMÜLE EDİLMİŞ FORCE FEEDBACK (FFB) AYARLARI
+// ==========================================
+#define FFB_SIMULATION_ENABLED   1       // 1: Simüle FFB Açık, 0: Kapalı (Tamamen serbest/klasik direksiyon)
+#define FFB_PARKED_FRICTION      0.28f   // Park halindeki hafif sertlik (0.0 - 1.0)
+#define FFB_MIN_FRICTION         0.00f   // Sürüş halindeki sürtünme (0.00 = tüy gibi hafif, sıfır motor direnci)
+#define FFB_MAX_FRICTION         0.25f   // Sert frende ulaşılabilecek maksimum sürtünme
+
+#define FFB_PARKED_STRENGTH      0.08f   // Park halindeki merkezleme gücü (hafif)
+#define FFB_MAX_STRENGTH         0.18f   // Gaza basınca / sürüşteki merkezleme gücü (yumuşak ve rahat)
+#define FFB_PARKED_RATE          0.10f   // Park halindeki merkezleme eğimi
+#define FFB_MAX_RATE             0.25f   // Gaza basınca / sürüşteki merkezleme eğimi (yumuşak geçiş)
+
 #endif // CONFIG_HOST_H

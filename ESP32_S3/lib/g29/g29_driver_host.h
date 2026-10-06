@@ -50,13 +50,24 @@ void g29_set_range(uint16_t range);
 void g29_set_constant_force(float force);
 
 /**
- * @brief Direksiyona mekanik bir sürtünme (ağırlık) ekler.
+ * @brief Direksiyona mekanik bir sürtünme (ağırlık) ekler (Non-blocking).
  * @param friction 0.0 (Hafif/Sürtünme yok) ile 1.0 (Maksimum ağırlık/Sert) arası.
  */
 void g29_set_friction(float friction);
 
 /**
- * @brief G29'un kendi donanımsal otomatik merkezleme yayını tamamen iptal eder.
+ * @brief Mekanik sürtünme değerini doğrudan donanım kademesi ile ayarlar (Non-blocking).
+ * @param f_val Sürtünme kademesi (0 - 7 arası)
+ */
+void g29_set_friction_raw(uint8_t f_val);
+
+/**
+ * @brief G29 donanımsal otomatik merkezleme modunu başlatır (0x14 komutu).
+ */
+void g29_enable_autocenter(void);
+
+/**
+ * @brief G29'un kendi donanımsal otomatik merkezleme yayını tamamen iptal eder (0xF5 komutu).
  */
 void g29_disable_autocenter(void);
 
@@ -65,6 +76,12 @@ void g29_disable_autocenter(void);
  */
 void g29_force_off(void);
 
+/**
+ * @brief Donanımsal merkezleme yay gücünü ve hızını ham değerlerle günceller (Non-blocking).
+ * @param s_val Güç kademesi (0 - 15)
+ * @param r_val Hız/Eğim kademesi (0 - 255)
+ */
+void g29_set_autocenter_raw(uint8_t s_val, uint8_t r_val);
 
 /**
  * @brief Direksiyonun kendini ortalama (Autocenter) gücünü ve hızını ayarlar.

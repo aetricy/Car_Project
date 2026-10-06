@@ -54,5 +54,18 @@ void g29_led_ui_intro_animation(void);
  */
 void g29_led_ui_exit_animation(void);
 
+/**
+ * @brief Sürüş modunda gaz pedalına göre devir (RPM) LED'lerini senkronize eder.
+ *        Gaz %0'da tüm LED'ler kapalıdır; gaz arttıkça yeşilden kırmızıya yanar.
+ *        Dip gazda (%96+) kesici/shift-light flaş efekti uygular.
+ * @param throttle 0.0 ile 1.0 arası gaz pedalı değeri
+ */
+void g29_led_ui_update_throttle(float throttle);
+
+/**
+ * @brief Gaz LED önbelleğini sıfırlar (Menü geçişlerinde ilk güncellemeyi güvenceye alır).
+ */
+void g29_led_ui_reset_throttle_cache(void);
+
 #endif // LED_UI_ON_G29_H
 

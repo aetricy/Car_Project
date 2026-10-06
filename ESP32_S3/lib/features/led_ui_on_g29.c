@@ -81,3 +81,45 @@ void g29_led_ui_exit_animation(void) {
     g29_led_ui_clear();
 }
 
+static uint8_t s_last_throttle_mask = 0xFF;
+static uint32_t s_shift_blink_tick = 0;
+
+void g29_led_ui_reset_throttle_cache(void) {
+    s_last_throttle_mask = 0xFF;
+    s_shift_blink_tick = 0;
+}
+
+void g29_led_ui_update_throttle(float throttle) {
+    uint8_t target_mask = 0;
+
+    // Gaz pedalına göre kademeli LED artışı
+    if (throttle < 0.10f) {
+        target_mask = G29_LED_NONE; // %0 - %10: Boşta, tüm LED'ler kapalı
+    } else if (throttle < 0.30f) {
+        target_mask = 0x01; // %10 - %30: 1 LED (Yeşil 1)
+    } else if (throttle < 0.50f) {
+        target_mask = 0x03; // %30 - %50: 2 LED (Yeşil 1+2)
+    } else if (throttle < 0.70f) {
+        target_mask = 0x07; // %50 - %70: 3 LED (Yeşil 1+2 + Sarı 1)
+    } else if (throttle < 0.90f) {
+        target_mask = 0x0F; // %70 - %90: 4 LED (Yeşil 1+2 + Sarı 1+2)
+    } else if (throttle < 0.96f) {
+        target_mask = 0x1F; // %90 - %96: 5 LED (Yeşil + Sarı + Kırmızı sabit açık)
+    } else {
+        // %96 ve üzeri (Dip gaz / Kesici / Shift Light efekti)
+        // Her ~80ms'de bir tüm LED'ler yanıp söner
+        s_shift_blink_tick++;
+        if ((s_shift_blink_tick / 4) % 2 == 0) {
+            target_mask = 0x1F;
+        } else {
+            target_mask = 0x00;
+        }
+    }
+
+    // Yalnızca LED maskesi değiştiğinde USB üzerinden gönder
+    if (target_mask != s_last_throttle_mask) {
+        g29_led_ui_set_raw(target_mask);
+        s_last_throttle_mask = target_mask;
+    }
+}
+

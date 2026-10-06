@@ -55,10 +55,16 @@ void g29_set_constant_force(float force) {
     if (force > 1.0f) force = 1.0f;
     if (force < -1.0f) force = -1.0f;
 
-    // JS kütüphanesindeki matematiksel haritalama
-    uint8_t val = (uint8_t)(fabs(force) * 255.0f); 
+    // 0 = Tam Sol, 128 = Nötr, 255 = Tam Sağ
+    uint8_t val = (uint8_t)((0.5f + force * 0.5f) * 255.0f); 
 
     uint8_t msg[] = { 0x11, 0x00, val, 0x00, 0x00, 0x00, 0x00 };
+    g29_send_ffb_command(msg, sizeof(msg));
+}
+
+void g29_set_friction_raw(uint8_t f_val) {
+    if (f_val > 7) f_val = 7;
+    uint8_t msg[] = { 0x21, 0x02, f_val, 0x00, f_val, 0x00, 0x00 };
     g29_send_ffb_command(msg, sizeof(msg));
 }
 
@@ -67,60 +73,46 @@ void g29_set_friction(float friction) {
     if (friction > 1.0f) friction = 1.0f;
     if (friction < 0.0f) friction = 0.0f;
 
-    // Donanım sadece 0x00 ile 0x07 arasını kabul eder
-    uint8_t val = (uint8_t)(friction * 7.0f); 
+    uint8_t val = (uint8_t)(friction * 7.0f + 0.5f); 
+    g29_set_friction_raw(val);
+}
 
-    // Sol ve sağ dönüş için sürtünme değerleri atanır
-    uint8_t msg[] = { 0x21, 0x02, val, 0x00, val, 0x00, 0x00 };
-    g29_send_ffb_command(msg, sizeof(msg));
-   
-   
-    vTaskDelay(pdMS_TO_TICKS(10));
-
-
+void g29_enable_autocenter(void) {
+    uint8_t msg_init[] = { 0x14, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00 };
+    g29_send_ffb_command(msg_init, sizeof(msg_init));
 }
 
 void g29_disable_autocenter(void) {
     // G29'un kendi merkezleme yayını tamamen iptal eder
     uint8_t msg[] = { 0xF5, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00 };
     g29_send_ffb_command(msg, sizeof(msg));
-    vTaskDelay(pdMS_TO_TICKS(10));
 }
 
 void g29_force_off(void) {
     // 0xF3 tüm aktif Force Feedback efektlerini siler
     uint8_t msg[] = { 0xF3, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00 };
     g29_send_ffb_command(msg, sizeof(msg));
-    vTaskDelay(pdMS_TO_TICKS(10));
 }
 
+void g29_set_autocenter_raw(uint8_t s_val, uint8_t r_val) {
+    if (s_val > 15) s_val = 15;
+    uint8_t msg_set[] = { 0xFE, 0x0D, s_val, s_val, r_val, 0x00, 0x00, 0x00 };
+    g29_send_ffb_command(msg_set, sizeof(msg_set));
+}
 
 // --- OTOMATIK MERKEZLEME (AUTOCENTER) AYARLAMA ---
 void g29_set_autocenter(float strength, float rate) {
-    vTaskDelay(pdMS_TO_TICKS(20));
-
     // Güvenlik: Değerlerin 0.0 ile 1.0 arasında olduğundan emin ol (Clamp)
     if (strength > 1.0f) strength = 1.0f;
     if (strength < 0.0f) strength = 0.0f;
     if (rate > 1.0f) rate = 1.0f;
     if (rate < 0.0f) rate = 0.0f;
 
-    // 1. Aşama: Autocenter modunu başlatma mesajı
-    uint8_t msg_init[] = { 0x14, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00 };
-    g29_send_ffb_command(msg_init, sizeof(msg_init));
+    g29_enable_autocenter();
 
-    // ESP32 USB yığılmasını önlemek ve G29'un komutu işlemesi için minik bir nefes (10ms)
-    vTaskDelay(pdMS_TO_TICKS(10));
-
-    // 2. Aşama: Güç ve Hız değerlerini hesapla
-    // Yolladığın referans kodda strength 15 ile, rate 255 ile çarpılmış. (+0.5f yuvarlama içindir)
     uint8_t s_val = (uint8_t)(strength * 15.0f + 0.5f);
     uint8_t r_val = (uint8_t)(rate * 255.0f + 0.5f);
-
-    // G29 Autocenter Komut Paketi
-    uint8_t msg_set[] = { 0xFE, 0x0D, s_val, s_val, r_val, 0x00, 0x00, 0x00 };
-    g29_send_ffb_command(msg_set, sizeof(msg_set));
-    vTaskDelay(pdMS_TO_TICKS(20));
+    g29_set_autocenter_raw(s_val, r_val);
 }
 
 

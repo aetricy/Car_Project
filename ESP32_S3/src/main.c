@@ -16,6 +16,7 @@
 #include "s3_status_led.h"
 #include "led_ui_on_g29.h"
 #include "config_control.h"
+#include "simulated_ffb.h"
 
 static const char *TAG = "MAIN_APP";
 
@@ -84,8 +85,8 @@ void on_g29_state_changed(g29_state_t state) {
             break;
             
         case G29_STATE_NATIVE_READY:
-            g29_disable_autocenter();
             g29_set_range(540);
+            simulated_ffb_init();
             current_system_state = STATE_SYS_ACTIVE;
             break;
     }
@@ -196,7 +197,15 @@ void Logic_Task(void *pvParameters) {
                     }
                 }
 
-                // --- 2. SÜREKLİ SÜRÜŞ PAKETİ GÖNDERME ---
+                // --- 2. SÜRÜŞ MODUNDA GAZ LED SENKRONİZASYONU ---
+                if (current_system_state == STATE_SYS_ACTIVE) {
+                    g29_led_ui_update_throttle(last_telemetry.throttle);
+                }
+
+                // --- 3. SİMÜLE EDİLMİŞ DİNAMİK FFB GÜNCELLEMESİ ---
+                simulated_ffb_update(&last_telemetry);
+
+                // --- 4. SÜREKLİ SÜRÜŞ PAKETİ GÖNDERME ---
                 espnow_tx_item_t tx_item;
                 memset(&tx_item, 0, sizeof(espnow_tx_item_t)); // Çöpleri temizle (0x00)
                 tx_item.length = sizeof(car_drive_packet_t);
@@ -231,6 +240,9 @@ void Logic_Task(void *pvParameters) {
 
                     xQueueSend(espnow_tx_queue, &cmd_item, 0);
                     sleep_command_sent = true;
+                    simulated_ffb_set_enabled(false); // Motorları serbest bırak (enerji tasarrufu)
+                    g29_led_ui_clear();
+                    g29_led_ui_reset_throttle_cache();
                     ESP_LOGW(TAG, "Araca UYKU Komutu Gonderildi.");
                 }
 
@@ -245,12 +257,17 @@ void Logic_Task(void *pvParameters) {
                     wake_item.payload.command.parameter   = 0;
 
                     xQueueSend(espnow_tx_queue, &wake_item, 0);
+                    simulated_ffb_init(); // FFB sistemini park profili ile yeniden etkinleştir
+                    g29_led_ui_reset_throttle_cache();
                     current_system_state = STATE_SYS_ACTIVE;
                 }
                 break;
             
             case STATE_USB_DISCONNECTED:
                 ESP_LOGE(TAG, "USB KOPTU! Acil Failsafe Tetikleniyor...");
+                simulated_ffb_reset();
+                g29_led_ui_clear();
+                g29_led_ui_reset_throttle_cache();
                 
                 espnow_tx_item_t fail_item;
                 memset(&fail_item, 0, sizeof(espnow_tx_item_t));
